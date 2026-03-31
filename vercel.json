@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/scrape",
+      "schedule": "0 13,19,1 * * *"
+    }
+  ],
+  "rewrites": [
+    { "source": "/api/scrape", "destination": "/api/scrape.js" },
+    { "source": "/api/data", "destination": "/api/data.js" }
+  ]
+}

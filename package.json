@@ -1,0 +1,11 @@
+{
+  "name": "waterwise",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@sparticuz/chromium": "^123.0.0",
+    "@vercel/kv": "^2.0.0",
+    "playwright-core": "^1.44.0"
+  }
+}

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WaterWise</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f7ff;
+      color: #1a2e40;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #0077b6;
+      letter-spacing: -0.5px;
+    }
+
+    header p {
+      font-size: 0.9rem;
+      color: #5a7a8a;
+      margin-top: 0.25rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1.25rem;
+      width: 100%;
+      max-width: 860px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 1.5rem 1.75rem;
+      box-shadow: 0 2px 12px rgba(0, 119, 182, 0.08);
+      border: 1px solid #ddeeff;
+    }
+
+    .card .label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #5a7a8a;
+      margin-bottom: 0.5rem;
+    }
+
+    .card .value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: #0077b6;
+      line-height: 1.1;
+    }
+
+    .card.status .value {
+      font-size: 1.25rem;
+    }
+
+    .card.status .value.over  { color: #e63946; }
+    .card.status .value.under { color: #2a9d8f; }
+    .card.status .value.ok    { color: #2a9d8f; }
+
+    #timestamp {
+      margin-top: 2rem;
+      font-size: 0.78rem;
+      color: #8aabb8;
+      text-align: center;
+    }
+
+    #error {
+      color: #e63946;
+      text-align: center;
+      font-size: 0.95rem;
+    }
+
+    .loading {
+      opacity: 0.4;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WaterWise</h1>
+    <p>Live meter stats from WaterScope</p>
+  </header>
+
+  <div class="grid" id="grid">
+    <div class="card"><div class="label">LCD Read</div><div class="value loading" id="lcdRead">—</div></div>
+    <div class="card"><div class="label">Daily Average</div><div class="value loading" id="dailyAverage">—</div></div>
+    <div class="card"><div class="label">So Far This Cycle</div><div class="value loading" id="soFarThisCycle">—</div></div>
+    <div class="card status"><div class="label">Water Budget Status</div><div class="value loading" id="waterBudgetStatus">—</div></div>
+  </div>
+
+  <div id="timestamp"></div>
+  <div id="error"></div>
+
+  <script>
+    async function load() {
+      try {
+        const res = await fetch('/api/data');
+        if (!res.ok) {
+          const err = await res.json();
+          document.getElementById('error').textContent = err.error || 'Failed to load data.';
+          return;
+        }
+        const d = await res.json();
+
+        const set = (id, val) => {
+          const el = document.getElementById(id);
+          if (el) { el.textContent = val ?? '—'; el.classList.remove('loading'); }
+        };
+
+        set('lcdRead', d.lcdRead);
+        set('dailyAverage', d.dailyAverage);
+        set('soFarThisCycle', d.soFarThisCycle);
+
+        const budgetEl = document.getElementById('waterBudgetStatus');
+        if (budgetEl) {
+          budgetEl.textContent = d.waterBudgetStatus ?? '—';
+          budgetEl.classList.remove('loading');
+          const v = (d.waterBudgetStatus || '').toLowerCase();
+          if (v.includes('over')) budgetEl.classList.add('over');
+          else if (v.includes('under') || v.includes('ok') || v.includes('good')) budgetEl.classList.add('under');
+        }
+
+        if (d.scrapedAt) {
+          const dt = new Date(d.scrapedAt);
+          document.getElementById('timestamp').textContent =
+            'Last updated: ' + dt.toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' }) + ' MT';
+        }
+      } catch (e) {
+        document.getElementById('error').textContent = 'Could not reach /api/data.';
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>
