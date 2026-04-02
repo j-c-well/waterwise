@@ -1,11 +1,9 @@
 const { chromium } = require('playwright');
-const Redis = require('ioredis');
-
-const redis = new Redis(process.env.REDIS_URL);
 
 async function main() {
   const email = process.env.WATERSCOPE_EMAIL;
   const password = process.env.WATERSCOPE_PASSWORD;
+  const redisUrl = process.env.REDIS_URL;
 
   if (!email || !password) {
     throw new Error('Missing WATERSCOPE_EMAIL or WATERSCOPE_PASSWORD env vars');
@@ -16,16 +14,24 @@ async function main() {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
 
-    // Navigate to waterscope.us — Azure B2C will redirect to login
-    await page.goto('https://waterscope.us', { waitUntil: 'networkidle' });
+    // Step 1: WaterScope email lookup, click Continue and wait for Azure B2C
+    await page.goto('https://waterscope.us/Home/Main', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.fill('#txtSearchUserName', email);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 }),
+      page.click('#searchUserName'),
+    ]);
 
-    // Fill Azure B2C login form
-    await page.fill('input[type="email"], input[name="email"], #email', email);
-    await page.fill('input[type="password"], input[name="password"], #password', password);
-    await page.click('button[type="submit"], input[type="submit"], #next');
+    // Step 2: Azure B2C password entry (email pre-filled)
+    await page.waitForSelector('#password', { timeout: 60000 });
+    await page.fill('#password', password);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 }),
+      page.click('#next'),
+    ]);
 
-    // Wait for dashboard to load after login
-    await page.waitForSelector('#meterpanetopheaderbar', { timeout: 30000 });
+    // Step 3: Dashboard
+    await page.waitForSelector('#meterpanetopheaderbar', { timeout: 60000 });
 
     // Scrape the meter stats from the header bar
     const data = await page.evaluate(() => {
@@ -58,11 +64,18 @@ async function main() {
       scrapedAt: new Date().toISOString(),
     };
 
-    await redis.set('waterwise:latest', JSON.stringify(payload));
-    console.log('Saved:', JSON.stringify(payload, null, 2));
+    if (redisUrl) {
+      const Redis = require('ioredis');
+      const redis = new Redis(redisUrl);
+      await redis.set('waterwise:latest', JSON.stringify(payload));
+      await redis.quit();
+      console.log('Saved to Redis:', JSON.stringify(payload, null, 2));
+    } else {
+      console.log('No REDIS_URL — scraped data:');
+      console.log(JSON.stringify(payload, null, 2));
+    }
   } finally {
     if (browser) await browser.close();
-    await redis.quit();
   }
 }
 
