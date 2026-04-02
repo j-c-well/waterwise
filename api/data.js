@@ -1,8 +1,11 @@
-import { kv } from '@vercel/kv';
+const Redis = require('ioredis');
 
-export default async function handler(req, res) {
+const redis = new Redis(process.env.REDIS_URL);
+
+module.exports = async function handler(req, res) {
   try {
-    const data = await kv.get('waterwise:latest');
+    const raw = await redis.get('waterwise:latest');
+    const data = raw ? JSON.parse(raw) : null;
 
     if (!data) {
       return res.status(404).json({ error: 'No data yet — scrape has not run' });
@@ -14,4 +17,4 @@ export default async function handler(req, res) {
     console.error('Data fetch error:', err);
     return res.status(500).json({ error: err.message });
   }
-}
+};

@@ -1,0 +1,29 @@
+name: Scrape WaterScope
+
+on:
+  schedule:
+    - cron: '0 13 * * *'  # 6am MT (UTC-7)
+  workflow_dispatch:       # allow manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      - name: Run scraper
+        env:
+          WATERSCOPE_EMAIL: ${{ secrets.WATERSCOPE_EMAIL }}
+          WATERSCOPE_PASSWORD: ${{ secrets.WATERSCOPE_PASSWORD }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+        run: node scripts/scrape.js

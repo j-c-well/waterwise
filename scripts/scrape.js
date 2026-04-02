@@ -1,37 +1,27 @@
-const chromium = require('chrome-aws-lambda');
+const { chromium } = require('playwright');
 const Redis = require('ioredis');
 
 const redis = new Redis(process.env.REDIS_URL);
 
-module.exports = async function handler(req, res) {
-  if (req.method !== 'GET' && req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
+async function main() {
   const email = process.env.WATERSCOPE_EMAIL;
   const password = process.env.WATERSCOPE_PASSWORD;
 
   if (!email || !password) {
-    return res.status(500).json({ error: 'Missing WATERSCOPE_EMAIL or WATERSCOPE_PASSWORD env vars' });
+    throw new Error('Missing WATERSCOPE_EMAIL or WATERSCOPE_PASSWORD env vars');
   }
 
   let browser;
   try {
-    browser = await chromium.puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath,
-      headless: chromium.headless,
-    });
-
+    browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
 
     // Navigate to waterscope.us — Azure B2C will redirect to login
-    await page.goto('https://waterscope.us', { waitUntil: 'networkidle0' });
+    await page.goto('https://waterscope.us', { waitUntil: 'networkidle' });
 
     // Fill Azure B2C login form
-    await page.type('input[type="email"], input[name="email"], #email', email);
-    await page.type('input[type="password"], input[name="password"], #password', password);
+    await page.fill('input[type="email"], input[name="email"], #email', email);
+    await page.fill('input[type="password"], input[name="password"], #password', password);
     await page.click('button[type="submit"], input[type="submit"], #next');
 
     // Wait for dashboard to load after login
@@ -42,10 +32,7 @@ module.exports = async function handler(req, res) {
       const bar = document.querySelector('#meterpanetopheaderbar');
       if (!bar) return null;
 
-      // Try to extract labeled values — adjust selectors if waterscope updates their DOM
       const allText = bar.innerText;
-
-      // Parse key/value pairs from the bar text
       const result = {};
 
       const lcdMatch = allText.match(/LCD Read[:\s]+([^\n]+)/i);
@@ -63,7 +50,7 @@ module.exports = async function handler(req, res) {
     });
 
     if (!data) {
-      return res.status(500).json({ error: 'Could not find #meterpanetopheaderbar on page' });
+      throw new Error('Could not find #meterpanetopheaderbar on page');
     }
 
     const payload = {
@@ -72,12 +59,14 @@ module.exports = async function handler(req, res) {
     };
 
     await redis.set('waterwise:latest', JSON.stringify(payload));
-
-    return res.status(200).json({ ok: true, data: payload });
-  } catch (err) {
-    console.error('Scrape error:', err);
-    return res.status(500).json({ error: err.message });
+    console.log('Saved:', JSON.stringify(payload, null, 2));
   } finally {
     if (browser) await browser.close();
+    await redis.quit();
   }
-};
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
