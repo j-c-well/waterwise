@@ -67,9 +67,14 @@ async function main() {
     if (redisUrl) {
       const Redis = require('ioredis');
       const redis = new Redis(redisUrl);
-      await redis.set('waterwise:latest', JSON.stringify(payload));
+      const dateKey = `waterwise:${new Date().toISOString().slice(0, 10)}`;
+      await Promise.all([
+        redis.set('waterwise:latest', JSON.stringify(payload)),
+        redis.set(dateKey, JSON.stringify(payload), 'EX', 7776000),
+      ]);
       await redis.quit();
-      console.log('Saved to Redis:', JSON.stringify(payload, null, 2));
+      console.log(`Saved to Redis: waterwise:latest and ${dateKey}`);
+      console.log(JSON.stringify(payload, null, 2));
     } else {
       console.log('No REDIS_URL — scraped data:');
       console.log(JSON.stringify(payload, null, 2));

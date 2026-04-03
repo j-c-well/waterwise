@@ -6,6 +6,7 @@
   },
   "rewrites": [
     { "source": "/api/scrape", "destination": "/api/scrape.js" },
-    { "source": "/api/data", "destination": "/api/data.js" }
+    { "source": "/api/data", "destination": "/api/data.js" },
+    { "source": "/api/history", "destination": "/api/history.js" }
   ]
 }
