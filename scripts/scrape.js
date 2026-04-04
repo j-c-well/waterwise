@@ -1,4 +1,52 @@
 const { chromium } = require('playwright');
+const https = require('https');
+
+const SNOTEL_URL = 'https://wcc.sc.egov.usda.gov/reportGenerator/view_csv/customSingleStationReport/daily/936:CO:SNTL%7Cid=%22%22%7Cname/-2,0/WTEQ::value,WTEQ::median_1991,PREC::value,PREC::median_1991';
+
+function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
+
+async function fetchSnowpack() {
+  try {
+    const text = await fetchText(SNOTEL_URL);
+    // Skip comment/header lines starting with '#', find the data rows
+    const lines = text.split('\n').filter(l => l.trim() && !l.startsWith('#'));
+    // Last non-empty data line is the most recent reading
+    const dataLine = lines[lines.length - 1];
+    if (!dataLine) return null;
+
+    const cols = dataLine.split(',');
+    // Columns: Date, SWE value, SWE median, Precip value, Precip median
+    const [date, sweRaw, sweMedianRaw, precRaw, precMedianRaw] = cols;
+
+    const swe        = parseFloat(sweRaw);
+    const sweMedian  = parseFloat(sweMedianRaw);
+    const prec       = parseFloat(precRaw);
+    const precMedian = parseFloat(precMedianRaw);
+
+    return {
+      snowpackDate:        date ? date.trim() : null,
+      snowpackSWE:         isNaN(swe)        ? null : swe,
+      snowpackSWEMedian:   isNaN(sweMedian)  ? null : sweMedian,
+      snowpackSWEPct:      (!isNaN(swe) && !isNaN(sweMedian) && sweMedian > 0)
+                             ? Math.round((swe / sweMedian) * 100) : null,
+      precipSeason:        isNaN(prec)       ? null : prec,
+      precipSeasonMedian:  isNaN(precMedian)  ? null : precMedian,
+      precipPct:           (!isNaN(prec) && !isNaN(precMedian) && precMedian > 0)
+                             ? Math.round((prec / precMedian) * 100) : null,
+    };
+  } catch (err) {
+    console.error('Snowpack fetch failed:', err.message);
+    return null;
+  }
+}
 
 // Tier thresholds in gallons
 const TIER_THRESHOLDS = [0, 3800, 7600, 11400, 15200];
@@ -110,6 +158,13 @@ async function main() {
       throw new Error('Could not find #meterpanetopheaderbar on page');
     }
 
+    // Fetch snowpack data (non-fatal if it fails)
+    const snow = await fetchSnowpack();
+    const snowFields = snow ?? {
+      snowpackDate: null, snowpackSWE: null, snowpackSWEMedian: null,
+      snowpackSWEPct: null, precipSeason: null, precipSeasonMedian: null, precipPct: null,
+    };
+
     // Compute enriched fields
     const now = new Date();
     const billingCycleDay = now.getDate();
@@ -187,6 +242,7 @@ async function main() {
         hasIrrigation:       raw.irrigationGallons > 0,
         tierCrossedToday,
         approachingTierAlert,
+        ...snowFields,
       };
 
       const dateKey = `waterwise:${now.toISOString().slice(0, 10)}`;
@@ -208,6 +264,7 @@ async function main() {
         costSoFar, projectedCost, costByTier,
         nudge, hasIrrigation: raw.irrigationGallons > 0,
         tierCrossedToday, approachingTierAlert,
+        ...snowFields,
       };
       console.log('No REDIS_URL — scraped data:');
       console.log(JSON.stringify(payload, null, 2));
