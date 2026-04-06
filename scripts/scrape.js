@@ -183,22 +183,33 @@ async function main() {
       throw new Error('Could not find #meterpanetopheaderbar on page');
     }
 
-    // Parse fixture breakdown from full body text (Residential Analysis panel)
-    function parseFixture(pattern) {
-      const m = bodyText.match(pattern);
-      return m ? parseFloat(m[1].replace(/,/g, '')) : 0;
+    // Parse fixture breakdown — extract Residential Analysis section first
+    const resSection = (() => {
+      const start = bodyText.indexOf('Residential Analysis');
+      const end   = bodyText.indexOf('Meter Information', start);
+      if (start === -1) return '';
+      return end === -1 ? bodyText.slice(start) : bodyText.slice(start, end);
+    })();
+
+    function parseFixture(labelPattern) {
+      // Find first number (with optional decimal) that appears before the label
+      const pattern = new RegExp('([\\d,]+\\.?\\d*)\\s*G[\\s\\S]*?' + labelPattern, 'i');
+      const m = resSection.match(pattern);
+      return m ? Math.round(parseFloat(m[1].replace(/,/g, ''))) : 0;
     }
+
     const fixtureYesterday = new Date();
     fixtureYesterday.setDate(fixtureYesterday.getDate() - 1);
     const fmm = String(fixtureYesterday.getMonth() + 1).padStart(2, '0');
     const fdd = String(fixtureYesterday.getDate()).padStart(2, '0');
+
     raw.fixtures = {
-      toilet:         parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Toilet/),
-      sink:           parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Sink/),
-      shower:         parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Shower/),
-      kitchen:        parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Kitchen\s*Use/i),
-      bathtub:        parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Bath\s*Tub/i),
-      washingMachine: parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Washing\s*Machine/i),
+      toilet:         parseFixture('Toilet'),
+      sink:           parseFixture('Sink'),
+      shower:         parseFixture('Shower'),
+      kitchen:        parseFixture('Kitchen'),
+      bathtub:        parseFixture('Bath'),
+      washingMachine: parseFixture('Washing'),
       date:           `${fmm}/${fdd}`,
     };
     console.log('fixtures:', JSON.stringify(raw.fixtures));
