@@ -172,6 +172,25 @@ async function main() {
       // Sanity check: anything over 10000 G is clearly a misparse
       result.irrigationGallons = irrVal > 10000 ? 0 : irrVal;
 
+      // Fixture breakdown — Residential Analysis panel (yesterday's gallons)
+      function parseFixture(pattern) {
+        const m = bodyText.match(pattern);
+        return m ? parseFloat(m[1]) : 0;
+      }
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const mm = String(yesterday.getMonth() + 1).padStart(2, '0');
+      const dd = String(yesterday.getDate()).padStart(2, '0');
+      result.fixtures = {
+        toilet:         parseFixture(/(\d+\.?\d*)\s*\n\s*Toilet/i),
+        sink:           parseFixture(/(\d+\.?\d*)\s*\n\s*Sink/i),
+        shower:         parseFixture(/(\d+\.?\d*)\s*\n\s*Shower/i),
+        kitchen:        parseFixture(/(\d+\.?\d*)\s*\n\s*Kitchen Use/i),
+        bathtub:        parseFixture(/(\d+\.?\d*)\s*\n\s*Bath Tub/i),
+        washingMachine: parseFixture(/(\d+\.?\d*)\s*\n\s*Washing Machine/i),
+        date:           `${mm}/${dd}`,
+      };
+
       return result;
     });
 
@@ -263,6 +282,7 @@ async function main() {
         hasIrrigation:       raw.irrigationGallons > 0,
         tierCrossedToday,
         approachingTierAlert,
+        fixtures:            raw.fixtures,
         ...snowFields,
       };
 
@@ -285,6 +305,7 @@ async function main() {
         costSoFar, projectedCost, costByTier,
         nudge, hasIrrigation: raw.irrigationGallons > 0,
         tierCrossedToday, approachingTierAlert,
+        fixtures: raw.fixtures,
         ...snowFields,
       };
       console.log('No REDIS_URL — scraped data:');
