@@ -207,6 +207,9 @@ async function main() {
 
     // Compute enriched fields
     const now = new Date();
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const consumptionDate = yesterday.toISOString().split('T')[0];
     const billingCycleDay = now.getDate();
     const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     const daysRemaining = daysInMonth - billingCycleDay;
@@ -240,9 +243,7 @@ async function main() {
       const Redis = require('ioredis');
       const redis = new Redis(redisUrl);
 
-      const yesterday = new Date(now);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayKey = `waterwise:${yesterday.toISOString().slice(0, 10)}`;
+      const yesterdayKey = `waterwise:${consumptionDate}`;
       const yesterdayRaw = await redis.get(yesterdayKey);
 
       if (yesterdayRaw) {
@@ -283,10 +284,11 @@ async function main() {
         tierCrossedToday,
         approachingTierAlert,
         fixtures:            raw.fixtures,
+        consumptionDate,
         ...snowFields,
       };
 
-      const dateKey = `waterwise:${now.toISOString().slice(0, 10)}`;
+      const dateKey = `waterwise:${consumptionDate}`;
       await Promise.all([
         redis.set('waterwise:latest', JSON.stringify(payload)),
         redis.set(dateKey, JSON.stringify(payload), 'EX', 7776000),
@@ -306,6 +308,7 @@ async function main() {
         nudge, hasIrrigation: raw.irrigationGallons > 0,
         tierCrossedToday, approachingTierAlert,
         fixtures: raw.fixtures,
+        consumptionDate,
         ...snowFields,
       };
       console.log('No REDIS_URL — scraped data:');
