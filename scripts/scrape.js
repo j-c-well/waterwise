@@ -122,34 +122,55 @@ async function main() {
     // Step 3: Dashboard
     await page.waitForSelector('#meterpanetopheaderbar', { timeout: 60000 });
 
-    // Scrape raw values from the header bar and irrigation panel
+    // Verify we actually landed on the dashboard, not a redirect back to login
+    const currentUrl = page.url();
+    if (!currentUrl.includes('/Consumer/')) {
+      throw new Error('Login failed or session expired — not on dashboard: ' + currentUrl);
+    }
+
+    // Wait until the dashboard has actually populated numeric values (AJAX)
+    await page.waitForFunction(() => {
+      const body = document.body.innerText;
+      return body.includes('So far this cycle') &&
+             body.includes('Daily Average') &&
+             /[\d,]+\.?\d*\s*G/.test(body);
+    }, { timeout: 60000 });
+
+    // Extra wait for JS rendering
+    await page.waitForTimeout(3000);
+
+    // Scrape raw values from the full page body
     const raw = await page.evaluate(() => {
       const bar = document.querySelector('#meterpanetopheaderbar');
       if (!bar) return null;
 
-      const allText = bar.innerText;
-      const result = {};
+      const barText  = bar.innerText;
+      const bodyText = document.body.innerText;
+      const result   = {};
 
-      const lcdMatch     = allText.match(/LCD Read[:\s]+([^\n]+)/i);
-      const dailyMatch   = allText.match(/Daily Average[:\s]+([\d.]+)/i);
-      const cycleMatch   = allText.match(/So Far This Cycle[:\s]+([\d.]+)/i);
-      const budgetMatch  = allText.match(/Water Budget[:\s]+([^\n]+)/i);
-      const billingMatch = allText.match(/Billing Read[:\s]+([\d.]+)/i);
+      // LCD read, water budget, billing read — from header bar
+      const lcdMatch     = barText.match(/LCD Read[:\s]+([^\n]+)/i);
+      const budgetMatch  = barText.match(/Water Budget[:\s]+([^\n]+)/i);
+      const billingMatch = barText.match(/Billing Read[:\s]+([\d,]+\.?\d*)/i);
 
-      if (lcdMatch)     result.lcdRead           = lcdMatch[1].trim();
-      if (dailyMatch)   result.dailyAverage       = parseFloat(dailyMatch[1]);
-      if (cycleMatch)   result.soFarThisCycle     = parseFloat(cycleMatch[1]);
-      if (budgetMatch)  result.waterBudgetStatus  = budgetMatch[1].trim();
-      if (billingMatch) result.billingRead        = parseFloat(billingMatch[1]);
+      if (lcdMatch)     result.lcdRead          = lcdMatch[1].trim();
+      if (budgetMatch)  result.waterBudgetStatus = budgetMatch[1].trim();
+      if (billingMatch) result.billingRead       = parseFloat(billingMatch[1].replace(/,/g, ''));
 
-      result.rawText = allText;
+      // soFarThisCycle and dailyAverage — parse from full body (left panel)
+      const cycleMatch = bodyText.match(/So far this cycle[\s\S]*?([\d,]+\.?\d*)\s*G/i);
+      const dailyMatch = bodyText.match(/Daily Average[\s\S]*?([\d,]+\.?\d*)\s*G/i);
 
-      // Irrigation consumption — look anywhere on the page for the irrigation panel
-      const irrEl = document.querySelector('[id*="irrigation"], [class*="irrigation"]');
-      const irrText = irrEl ? irrEl.innerText : document.body.innerText;
-      const irrMatch = irrText.match(/Irrigation[^]*?consumption[^]*?([\d.]+)\s*G/i)
-                    || irrText.match(/([\d.]+)\s*G[^]*?irrigation/i);
-      result.irrigationGallons = irrMatch ? parseFloat(irrMatch[1]) : 0;
+      result.soFarThisCycle = cycleMatch ? parseFloat(cycleMatch[1].replace(/,/g, '')) : 0;
+      result.dailyAverage   = dailyMatch ? parseFloat(dailyMatch[1].replace(/,/g, '')) : 0;
+
+      result.rawText = barText;
+
+      // Irrigation consumption — from Irrigation Analysis section of body
+      const irrMatch = bodyText.match(/Irrigation Analysis[\s\S]*?([\d,]+\.?\d*)\s*G/i);
+      const irrVal   = irrMatch ? parseFloat(irrMatch[1].replace(/,/g, '')) : 0;
+      // Sanity check: anything over 10000 G is clearly a misparse
+      result.irrigationGallons = irrVal > 10000 ? 0 : irrVal;
 
       return result;
     });
