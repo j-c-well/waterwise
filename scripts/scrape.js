@@ -172,31 +172,36 @@ async function main() {
       // Sanity check: anything over 10000 G is clearly a misparse
       result.irrigationGallons = irrVal > 10000 ? 0 : irrVal;
 
-      // Fixture breakdown — Residential Analysis panel (yesterday's gallons)
-      function parseFixture(pattern) {
-        const m = bodyText.match(pattern);
-        return m ? parseFloat(m[1]) : 0;
-      }
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const mm = String(yesterday.getMonth() + 1).padStart(2, '0');
-      const dd = String(yesterday.getDate()).padStart(2, '0');
-      result.fixtures = {
-        toilet:         parseFixture(/(\d+\.?\d*)\s*\n\s*Toilet/i),
-        sink:           parseFixture(/(\d+\.?\d*)\s*\n\s*Sink/i),
-        shower:         parseFixture(/(\d+\.?\d*)\s*\n\s*Shower/i),
-        kitchen:        parseFixture(/(\d+\.?\d*)\s*\n\s*Kitchen Use/i),
-        bathtub:        parseFixture(/(\d+\.?\d*)\s*\n\s*Bath Tub/i),
-        washingMachine: parseFixture(/(\d+\.?\d*)\s*\n\s*Washing Machine/i),
-        date:           `${mm}/${dd}`,
-      };
-
       return result;
     });
+
+    // Capture full body text after main evaluate — includes Residential Analysis panel
+    const bodyText = await page.evaluate(() => document.body.innerText);
+    raw.rawText = bodyText;
 
     if (!raw) {
       throw new Error('Could not find #meterpanetopheaderbar on page');
     }
+
+    // Parse fixture breakdown from full body text (Residential Analysis panel)
+    function parseFixture(pattern) {
+      const m = bodyText.match(pattern);
+      return m ? parseFloat(m[1].replace(/,/g, '')) : 0;
+    }
+    const fixtureYesterday = new Date();
+    fixtureYesterday.setDate(fixtureYesterday.getDate() - 1);
+    const fmm = String(fixtureYesterday.getMonth() + 1).padStart(2, '0');
+    const fdd = String(fixtureYesterday.getDate()).padStart(2, '0');
+    raw.fixtures = {
+      toilet:         parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Toilet/),
+      sink:           parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Sink/),
+      shower:         parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Shower/),
+      kitchen:        parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Kitchen\s*Use/i),
+      bathtub:        parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Bath\s*Tub/i),
+      washingMachine: parseFixture(/([\d,]+\.?\d*)\s*G[\s\S]*?\n\s*Washing\s*Machine/i),
+      date:           `${fmm}/${fdd}`,
+    };
+    console.log('fixtures:', JSON.stringify(raw.fixtures));
 
     // Fetch snowpack data (non-fatal if it fails)
     const snow = await fetchSnowpack();
