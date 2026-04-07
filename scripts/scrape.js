@@ -187,12 +187,12 @@ async function main() {
     const resStart = bodyText.indexOf('Residential Analysis');
     const resEnd   = bodyText.indexOf('Meter Information', resStart);
     const resText  = resStart === -1 ? '' : (resEnd === -1 ? bodyText.slice(resStart) : bodyText.slice(resStart, resEnd));
-    const resLines = resText.split('\n').map(l => l.trim()).filter(Boolean);
+    const resLines = resText.split('\n').map(l => l.trim()).filter(Boolean).slice(3);
 
     function getFixtureValue(lines, label) {
       const idx = lines.findIndex(l => l.toLowerCase().includes(label.toLowerCase()));
-      if (idx === -1 || idx >= lines.length - 1) return 0;
-      const numLine = lines[idx + 1];
+      if (idx < 1) return 0;
+      const numLine = lines[idx - 1];
       const match = numLine.match(/([\d.]+)/);
       return match ? Math.round(parseFloat(match[1])) : 0;
     }
