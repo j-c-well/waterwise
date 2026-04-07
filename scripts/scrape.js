@@ -183,34 +183,28 @@ async function main() {
       throw new Error('Could not find #meterpanetopheaderbar on page');
     }
 
-    // Parse fixture breakdown — extract Residential Analysis section first
-    const resSection = (() => {
-      const start = bodyText.indexOf('Residential Analysis');
-      const end   = bodyText.indexOf('Meter Information', start);
-      if (start === -1) return '';
-      return end === -1 ? bodyText.slice(start) : bodyText.slice(start, end);
-    })();
+    // Parse fixture breakdown — line-by-line from Residential Analysis section
+    const resStart = bodyText.indexOf('Residential Analysis');
+    const resEnd   = bodyText.indexOf('Meter Information', resStart);
+    const resText  = resStart === -1 ? '' : (resEnd === -1 ? bodyText.slice(resStart) : bodyText.slice(resStart, resEnd));
+    const resLines = resText.split('\n').map(l => l.trim()).filter(Boolean);
 
-    function parseFixture(labelPattern) {
-      // Find first number (with optional decimal) that appears before the label
-      const pattern = new RegExp('([\\d,]+\\.?\\d*)\\s*G[\\s\\S]*?' + labelPattern, 'i');
-      const m = resSection.match(pattern);
-      return m ? Math.round(parseFloat(m[1].replace(/,/g, ''))) : 0;
+    function getFixtureValue(lines, label) {
+      const idx = lines.findIndex(l => l.toLowerCase().includes(label.toLowerCase()));
+      if (idx < 1) return 0;
+      const numLine = lines[idx - 1];
+      const match = numLine.match(/([\d.]+)/);
+      return match ? Math.round(parseFloat(match[1])) : 0;
     }
 
-    const fixtureYesterday = new Date();
-    fixtureYesterday.setDate(fixtureYesterday.getDate() - 1);
-    const fmm = String(fixtureYesterday.getMonth() + 1).padStart(2, '0');
-    const fdd = String(fixtureYesterday.getDate()).padStart(2, '0');
-
     raw.fixtures = {
-      toilet:         parseFixture('Toilet'),
-      sink:           parseFixture('Sink'),
-      shower:         parseFixture('Shower'),
-      kitchen:        parseFixture('Kitchen'),
-      bathtub:        parseFixture('Bath'),
-      washingMachine: parseFixture('Washing'),
-      date:           `${fmm}/${fdd}`,
+      toilet:         getFixtureValue(resLines, 'Toilet'),
+      sink:           getFixtureValue(resLines, 'Sink'),
+      shower:         getFixtureValue(resLines, 'Shower'),
+      kitchen:        getFixtureValue(resLines, 'Kitchen'),
+      bathtub:        getFixtureValue(resLines, 'Bath Tub'),
+      washingMachine: getFixtureValue(resLines, 'Washing Machine'),
+      date:           consumptionDate,
     };
     console.log('fixtures:', JSON.stringify(raw.fixtures));
 
