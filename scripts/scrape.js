@@ -204,7 +204,7 @@ async function main() {
       kitchen:        getFixtureValue(resLines, 'Kitchen'),
       bathtub:        getFixtureValue(resLines, 'Bath Tub'),
       washingMachine: getFixtureValue(resLines, 'Washing Machine'),
-      date:           consumptionDate,
+      date:           null, // set below once consumptionDate is computed
     };
     console.log('fixtures:', JSON.stringify(raw.fixtures));
 
@@ -220,6 +220,8 @@ async function main() {
     const yesterday = new Date(now);
     yesterday.setDate(yesterday.getDate() - 1);
     const consumptionDate = yesterday.toISOString().split('T')[0];
+    // Patch fixtures date now that consumptionDate is defined
+    raw.fixtures.date = consumptionDate;
     const billingCycleDay = now.getDate();
     const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     const daysRemaining = daysInMonth - billingCycleDay;
