@@ -191,8 +191,8 @@ async function main() {
 
     function getFixtureValue(lines, label) {
       const idx = lines.findIndex(l => l.toLowerCase().includes(label.toLowerCase()));
-      if (idx < 1) return 0;
-      const numLine = lines[idx - 1];
+      if (idx === -1 || idx >= lines.length - 1) return 0;
+      const numLine = lines[idx + 1];
       const match = numLine.match(/([\d.]+)/);
       return match ? Math.round(parseFloat(match[1])) : 0;
     }
