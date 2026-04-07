@@ -268,6 +268,36 @@ async function main() {
         }
       }
 
+      // Parse yesterday's consumption from body text
+      const consumptionMatch = bodyText.match(/Water Consumption[\s\S]*?([\d,]+\.?\d*)\s*G/i);
+      const waterConsumptionToday = consumptionMatch
+        ? parseFloat(consumptionMatch[1].replace(/,/g, ''))
+        : 0;
+
+      // Compute 7-day rolling average from daily Redis keys
+      const historyVals = [];
+      for (let i = 1; i <= 7; i++) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - i);
+        const key = `waterwise:${d.toISOString().slice(0, 10)}`;
+        const raw7 = await redis.get(key);
+        if (raw7) {
+          const entry = JSON.parse(raw7);
+          if (entry.waterConsumptionToday > 0) historyVals.push(entry.waterConsumptionToday);
+        }
+      }
+      const sevenDayAvg = historyVals.length > 0
+        ? historyVals.reduce((a, b) => a + b, 0) / historyVals.length
+        : dailyAverage;
+
+      const spikeAlert = waterConsumptionToday > 200 &&
+        sevenDayAvg > 0 &&
+        waterConsumptionToday > sevenDayAvg * 2;
+
+      const spikeMultiplier = spikeAlert
+        ? (waterConsumptionToday / sevenDayAvg).toFixed(1)
+        : null;
+
       const payload = {
         // Raw
         lcdRead:            raw.lcdRead ?? null,
@@ -295,6 +325,10 @@ async function main() {
         hasIrrigation:       raw.irrigationGallons > 0,
         tierCrossedToday,
         approachingTierAlert,
+        waterConsumptionToday,
+        sevenDayAvg:         Math.round(sevenDayAvg * 10) / 10,
+        spikeAlert,
+        spikeMultiplier,
         fixtures:            raw.fixtures,
         consumptionDate,
         ...snowFields,
