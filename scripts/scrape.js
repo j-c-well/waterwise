@@ -187,7 +187,7 @@ async function main() {
     const resStart = bodyText.indexOf('Residential Analysis');
     const resEnd   = bodyText.indexOf('Meter Information', resStart);
     const resText  = resStart === -1 ? '' : (resEnd === -1 ? bodyText.slice(resStart) : bodyText.slice(resStart, resEnd));
-    const resLines = resText.split('\n').map(l => l.trim()).filter(Boolean).slice(3);
+    const resLines = resText.split('\n').map(l => l.trim()).filter(Boolean).slice(2);
 
     function getFixtureValue(lines, label) {
       const idx = lines.findIndex(l => l.toLowerCase().includes(label.toLowerCase()));
