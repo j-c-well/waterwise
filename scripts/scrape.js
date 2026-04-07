@@ -187,14 +187,16 @@ async function main() {
     const resStart = bodyText.indexOf('Residential Analysis');
     const resEnd   = bodyText.indexOf('Meter Information', resStart);
     const resText  = resStart === -1 ? '' : (resEnd === -1 ? bodyText.slice(resStart) : bodyText.slice(resStart, resEnd));
-    const resLines = resText.split('\n').map(l => l.trim()).filter(Boolean).slice(2);
+    const resLines = resText.split('\n').map(l => l.trim()).filter(Boolean);
 
     function getFixtureValue(lines, label) {
       const idx = lines.findIndex(l => l.toLowerCase().includes(label.toLowerCase()));
       if (idx < 1) return 0;
-      const numLine = lines[idx - 1];
-      const match = numLine.match(/([\d.]+)/);
-      return match ? Math.round(parseFloat(match[1])) : 0;
+      for (let i = idx - 1; i >= 0; i--) {
+        const match = lines[i].match(/^([\d.]+)\s*G?$/);
+        if (match) return Math.round(parseFloat(match[1]));
+      }
+      return 0;
     }
 
     raw.fixtures = {
