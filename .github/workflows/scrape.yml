@@ -26,4 +26,6 @@ jobs:
           WATERSCOPE_EMAIL: ${{ secrets.WATERSCOPE_EMAIL }}
           WATERSCOPE_PASSWORD: ${{ secrets.WATERSCOPE_PASSWORD }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_EMAIL: ${{ secrets.REPORT_EMAIL }}
         run: node scripts/scrape.js

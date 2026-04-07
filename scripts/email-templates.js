@@ -349,4 +349,73 @@ function tierAlert(data) {
   return { html, text };
 }
 
-module.exports = { weeklySnapshot, tierAlert };
+// ═══════════════════════════════════════════════════════════════════════════
+// 3. spikeAlert
+// ═══════════════════════════════════════════════════════════════════════════
+
+function spikeAlert(data, consumptionToday, sevenDayAvg) {
+  const { spikeMultiplier = '?', dailyAverage = 0, hasIrrigation = false } = data;
+  const multiplier = spikeMultiplier || (sevenDayAvg > 0 ? (consumptionToday / sevenDayAvg).toFixed(1) : '?');
+
+  const header = `
+    <h1 style="margin:0 0 4px;font-size:22px;font-weight:700;color:#ffffff;letter-spacing:-.3px;">
+      Unusual water use detected
+    </h1>
+    <p style="margin:0;font-size:14px;color:#fecaca;">
+      ${fmt(consumptionToday)} gal yesterday &mdash; ${multiplier}x your normal
+    </p>`;
+
+  const tips = hasIrrigation ? [
+    'Check your irrigation controller — a stuck valve can run for hours unnoticed.',
+    'Walk your yard and look for pooling water or unusually wet areas.',
+    'Review your irrigation schedule — a mis-programmed zone can triple your use.',
+  ] : [
+    'Check all toilets for running water (listen or use a dye tablet).',
+    'Look under sinks and around the water heater for slow drips.',
+    'If no obvious leak, check your meter reading at night vs morning.',
+  ];
+
+  const body = `
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:24px;">
+      <tr>
+        ${statCell('Yesterday', fmt(consumptionToday) + ' gal', 'consumed')}
+        ${statCell('Your normal', fmt(sevenDayAvg) + ' gal', '7-day avg')}
+        ${statCell('Multiplier', multiplier + 'x', 'above average')}
+      </tr>
+    </table>
+
+    <p style="margin:0 0 12px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#64748b;">
+      What to check
+    </p>
+    ${tips.map((tip, i) => `
+    <div style="display:flex;margin-bottom:12px;">
+      <div style="min-width:24px;height:24px;background:#fee2e2;border-radius:50%;text-align:center;line-height:24px;font-size:12px;font-weight:700;color:#dc2626;margin-right:12px;">${i + 1}</div>
+      <p style="margin:0;font-size:13px;color:#334155;line-height:1.5;padding-top:3px;">${tip}</p>
+    </div>`).join('')}
+
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px;">
+      <tr><td align="center">
+        <a href="${DASHBOARD_URL}" style="display:inline-block;background:#dc2626;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">
+          View Dashboard
+        </a>
+      </td></tr>
+    </table>`;
+
+  const html = wrap('#dc2626', header, body);
+
+  const text = [
+    `WATERWISE SPIKE ALERT: ${fmt(consumptionToday)} gal yesterday (${multiplier}x normal)`,
+    '',
+    `Yesterday: ${fmt(consumptionToday)} gal`,
+    `7-day avg: ${fmt(sevenDayAvg)} gal`,
+    '',
+    'What to check:',
+    ...tips.map((t, i) => `  ${i + 1}. ${t}`),
+    '',
+    `Dashboard: ${DASHBOARD_URL}`,
+  ].join('\n');
+
+  return { html, text };
+}
+
+module.exports = { weeklySnapshot, tierAlert, spikeAlert };

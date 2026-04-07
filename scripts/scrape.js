@@ -309,6 +309,13 @@ async function main() {
 
       console.log(`Saved to Redis: waterwise:latest and ${dateKey}`);
       console.log(JSON.stringify(payload, null, 2));
+
+      const { sendAlerts } = require('./email-alert.js');
+      try {
+        await sendAlerts(payload);
+      } catch (e) {
+        console.error('Alert email failed:', e.message);
+      }
     } else {
       // No Redis — just log for local debugging
       const payload = {
