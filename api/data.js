@@ -20,8 +20,11 @@ module.exports = async function handler(req, res) {
       return res.status(404).json({ error: 'No data yet — scrape has not run' });
     }
 
+    const staleHours = Math.round((Date.now() - new Date(data.scrapedAt)) / 3600000);
+    const dataStale  = staleHours > 25;
+
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
-    return res.status(200).json(data);
+    return res.status(200).json({ ...data, dataStale, staleHours });
   } catch (err) {
     console.error('Data fetch error:', err);
     return res.status(500).json({ error: err.message });
