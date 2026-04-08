@@ -1,0 +1,69 @@
+name: Watchdog
+
+on:
+  schedule:
+    - cron: '0 15 * * *'  # 8am MT (UTC-7), 2 hours after scraper
+  workflow_dispatch:
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check data freshness
+        id: check
+        run: |
+          RESPONSE=$(curl -sf https://waterwise-six.vercel.app/api/data)
+          if [ $? -ne 0 ]; then
+            echo "stale=true" >> $GITHUB_OUTPUT
+            echo "hours=unknown" >> $GITHUB_OUTPUT
+            echo "API fetch failed"
+            exit 0
+          fi
+          SCRAPED_AT=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scrapedAt',''))")
+          if [ -z "$SCRAPED_AT" ]; then
+            echo "stale=true" >> $GITHUB_OUTPUT
+            echo "hours=unknown" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          NOW=$(date +%s)
+          SCRAPED=$(date -d "$SCRAPED_AT" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%S" "${SCRAPED_AT%%.*}" +%s 2>/dev/null)
+          HOURS=$(( (NOW - SCRAPED) / 3600 ))
+          echo "hours=$HOURS" >> $GITHUB_OUTPUT
+          if [ "$HOURS" -gt 25 ]; then
+            echo "stale=true" >> $GITHUB_OUTPUT
+          else
+            echo "stale=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send stale alert email
+        if: steps.check.outputs.stale == 'true'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_EMAIL: ${{ secrets.REPORT_EMAIL }}
+        run: |
+          curl -sf https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"from\": \"onboarding@resend.dev\",
+              \"to\": \"$REPORT_EMAIL\",
+              \"subject\": \"WaterWise scraper missed — data is stale\",
+              \"text\": \"The WaterWise scraper has not run successfully. Last successful scrape was ${{ steps.check.outputs.hours }} hours ago.\n\nA re-run has been triggered automatically.\"
+            }"
+
+      - name: Trigger scraper re-run
+        if: steps.check.outputs.stale == 'true'
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/j-c-well/waterwise/actions/workflows/scrape.yml/dispatches \
+            -d '{"ref":"main"}'
+
+      - name: Log result
+        run: |
+          if [ "${{ steps.check.outputs.stale }}" == "true" ]; then
+            echo "STALE: data is ${{ steps.check.outputs.hours }} hours old — alert sent and scraper re-triggered"
+          else
+            echo "OK: data is ${{ steps.check.outputs.hours }} hours old"
+          fi
