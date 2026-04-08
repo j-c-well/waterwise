@@ -337,13 +337,14 @@ async function main() {
       };
 
       const dateKey = `waterwise:${consumptionDate}`;
+      console.log('Saving to Redis...');
       await Promise.all([
         redis.set('waterwise:latest', JSON.stringify(payload)),
         redis.set(dateKey, JSON.stringify(payload), 'EX', 7776000),
       ]);
       await redis.quit();
 
-      console.log(`Saved to Redis: waterwise:latest and ${dateKey}`);
+      console.log(`SUCCESS: saved waterwise:latest and ${dateKey}`);
       console.log(JSON.stringify(payload, null, 2));
 
       const { sendAlerts } = require('./email-alert.js');
