@@ -90,6 +90,7 @@ function parseNumber(str) {
 }
 
 async function main() {
+  console.log('Scraper starting:', new Date().toISOString());
   const email = process.env.WATERSCOPE_EMAIL;
   const password = process.env.WATERSCOPE_PASSWORD;
   const redisUrl = process.env.REDIS_URL;
@@ -118,6 +119,8 @@ async function main() {
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 }),
       page.click('#next'),
     ]);
+
+    console.log('Login successful');
 
     // Step 3: Dashboard
     await page.waitForSelector('#meterpanetopheaderbar', { timeout: 60000 });
@@ -182,6 +185,7 @@ async function main() {
     if (!raw) {
       throw new Error('Could not find #meterpanetopheaderbar on page');
     }
+    console.log('Dashboard loaded, soFarThisCycle:', raw.soFarThisCycle);
 
     // Parse fixture breakdown — line-by-line from Residential Analysis section
     const resStart = bodyText.indexOf('Residential Analysis');
@@ -344,7 +348,7 @@ async function main() {
       ]);
       await redis.quit();
 
-      console.log(`SUCCESS: saved waterwise:latest and ${dateKey}`);
+      console.log('SUCCESS: Redis updated', dateKey, 'soFarThisCycle:', payload.soFarThisCycle);
       console.log(JSON.stringify(payload, null, 2));
 
       const { sendAlerts } = require('./email-alert.js');
@@ -376,6 +380,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error('SCRAPER FAILED at:', new Date().toISOString(), err.message);
   process.exit(1);
 });
