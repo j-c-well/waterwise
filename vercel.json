@@ -16,6 +16,9 @@
   "rewrites": [
     { "source": "/api/scrape", "destination": "/api/scrape.js" },
     { "source": "/api/data", "destination": "/api/data.js" },
-    { "source": "/api/history", "destination": "/api/history.js" }
+    { "source": "/api/history", "destination": "/api/history.js" },
+    { "source": "/api/household/profile", "destination": "/api/household/profile.js" },
+    { "source": "/api/household/event-log", "destination": "/api/household/event-log.js" },
+    { "source": "/api/household/event-correction", "destination": "/api/household/event-correction.js" }
   ]
 }

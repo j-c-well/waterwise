@@ -23,8 +23,11 @@ module.exports = async function handler(req, res) {
     const staleHours = Math.round((Date.now() - new Date(data.scrapedAt)) / 3600000);
     const dataStale  = staleHours > 25;
 
+    const profileRaw     = await redis.get('waterwise:household:owner');
+    const householdProfile = profileRaw ? JSON.parse(profileRaw) : null;
+
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
-    return res.status(200).json({ ...data, dataStale, staleHours });
+    return res.status(200).json({ ...data, dataStale, staleHours, householdProfile });
   } catch (err) {
     console.error('Data fetch error:', err);
     return res.status(500).json({ error: err.message });
