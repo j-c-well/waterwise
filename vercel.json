@@ -20,6 +20,7 @@
     { "source": "/api/household/profile", "destination": "/api/household/profile.js" },
     { "source": "/api/household/event-log", "destination": "/api/household/event-log.js" },
     { "source": "/api/household/event-correction", "destination": "/api/household/event-correction.js" },
-    { "source": "/api/household/scan-label", "destination": "/api/household/scan-label.js" }
+    { "source": "/api/household/scan-label", "destination": "/api/household/scan-label.js" },
+    { "source": "/api/corrected", "destination": "/api/corrected.js" }
   ]
 }

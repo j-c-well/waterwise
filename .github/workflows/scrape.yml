@@ -29,3 +29,8 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           REPORT_EMAIL: ${{ secrets.REPORT_EMAIL }}
         run: node scripts/scrape.js
+
+      - name: Run corrections
+        env:
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+        run: node scripts/corrections.js
