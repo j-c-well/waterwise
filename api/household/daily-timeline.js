@@ -146,23 +146,24 @@ function spanMs(grp) {
 // ── correction rules ──────────────────────────────────────────────────────────
 
 // Rule 1: sustained OTHER/UNKNOWN bursts → dishwasher
-// Each event 0.03–0.25G, spaced ≤ 5 min, cluster spans ≥ 20 min
+// Pattern: 0.01–0.20G per interval, ≤ 3 min gap, cluster spans ≥ 15 min, total ≥ 0.9G
+// (0.9G threshold catches the real Bosch HE pattern; user-stated 1.0G rounds up naturally)
 function applyRule1(intervals) {
   let count = 0;
   const candidates = intervals
     .map((iv, i) => ({ iv, i }))
     .filter(({ iv }) =>
       (iv.classification === 'OTHER' || iv.classification === 'UNKNOWN') &&
-      iv.volume >= 0.03 && iv.volume <= 0.25
+      iv.volume >= 0.01 && iv.volume <= 0.20
     );
 
   if (!candidates.length) return count;
 
-  // Sub-group by time proximity
+  // Sub-group by time proximity (≤ 3 min gap)
   const groups = [];
   let cur = [candidates[0]];
   for (let k = 1; k < candidates.length; k++) {
-    if (gapMs(candidates[k - 1].iv, candidates[k].iv) <= 5 * MIN_MS) {
+    if (gapMs(candidates[k - 1].iv, candidates[k].iv) <= 3 * MIN_MS) {
       cur.push(candidates[k]);
     } else {
       groups.push(cur); cur = [candidates[k]];
@@ -171,7 +172,8 @@ function applyRule1(intervals) {
   groups.push(cur);
 
   for (const grp of groups) {
-    if (spanMs(grp.map(c => c.iv)) >= 20 * MIN_MS) {
+    const totalVol = grp.reduce((s, c) => s + c.iv.volume, 0);
+    if (spanMs(grp.map(c => c.iv)) >= 15 * MIN_MS && totalVol >= 0.9) {
       for (const { i } of grp) {
         intervals[i] = { ...intervals[i], classification: 'DISHWASHER', correctedBy: 'rule1', correctionRule: 'sustained-low-flow-pattern' };
         count++;
@@ -182,7 +184,9 @@ function applyRule1(intervals) {
 }
 
 // Rule 2: event-log match → reclassify nearest cluster
-function applyRule2(intervals, eventLog, targetDate) {
+// Compares TIME-OF-DAY only (UTC hours+minutes) to avoid date-offset issues
+// between the event log (local-time ISO strings) and Metron timestamps (local-as-UTC).
+function applyRule2(intervals, eventLog) {
   let count = 0;
   const dishEvents = (eventLog ?? []).filter(e =>
     String(e.appliance ?? '').toLowerCase().includes('dishwasher')
@@ -191,16 +195,23 @@ function applyRule2(intervals, eventLog, targetDate) {
   for (const evt of dishEvents) {
     const evtTime = evt.startTime ? new Date(evt.startTime) : null;
     if (!evtTime || isNaN(evtTime)) continue;
-    if (evtTime.toISOString().slice(0, 10) !== targetDate) continue;
 
-    const WINDOW = 15 * MIN_MS;
+    // Time-of-day in minutes (0–1439), read as UTC to match Metron's local-as-UTC storage
+    const evtTodMin = evtTime.getUTCHours() * 60 + evtTime.getUTCMinutes();
+    const WINDOW_MIN = 15;
+
+    let matched = 0;
     for (let i = 0; i < intervals.length; i++) {
       const iv = intervals[i];
-      if (iv.time && Math.abs(iv.time - evtTime) <= WINDOW) {
+      if (!iv.time) continue;
+      const ivTodMin = iv.time.getUTCHours() * 60 + iv.time.getUTCMinutes();
+      if (Math.abs(ivTodMin - evtTodMin) <= WINDOW_MIN) {
         intervals[i] = { ...iv, classification: 'DISHWASHER', correctedBy: 'rule2', correctionRule: 'event-log-match', confidence: 'high' };
-        count++;
+        matched++;
       }
     }
+    count += matched;
+    console.log(`Rule 2: matched ${matched} intervals to event at TOD ${Math.floor(evtTodMin/60)}:${String(evtTodMin%60).padStart(2,'0')}`);
   }
   return count;
 }

@@ -112,39 +112,37 @@ function clusterDurationMs(grp) {
 // ── correction rules ──────────────────────────────────────────────────────────
 
 // Rule 1: Sustained OTHER bursts → DISHWASHER
-// Pattern: cluster of OTHER intervals, each 0.05–0.20 G, lasting ≥ 20 min
+// Pattern: 0.01–0.20G per interval, ≤ 3 min gap, cluster spans ≥ 15 min, total ≥ 0.9G
 function applyDishwasherDetection(intervals) {
   const otherIdxs = new Set();
 
-  // Collect indices of OTHER-classified, in-range-volume intervals
   const candidates = intervals
     .map((iv, i) => ({ iv, i }))
     .filter(({ iv }) => {
       const cls = iv.classification;
       return (cls === 'OTHER' || cls === 'UNKNOWN') &&
-             iv.volume >= 0.05 && iv.volume <= 0.20;
+             iv.volume >= 0.01 && iv.volume <= 0.20;
     });
 
   if (!candidates.length) return;
 
-  // Group candidate indices by time proximity (≤ 5 min gap)
+  // Group by ≤ 3 min gap
   const groups = [];
   let cur = [candidates[0]];
   for (let k = 1; k < candidates.length; k++) {
-    const prev = candidates[k - 1];
-    const next = candidates[k];
-    if (gapMs(prev.iv, next.iv) <= 5 * MIN) {
-      cur.push(next);
+    if (gapMs(candidates[k - 1].iv, candidates[k].iv) <= 3 * MIN) {
+      cur.push(candidates[k]);
     } else {
       groups.push(cur);
-      cur = [next];
+      cur = [candidates[k]];
     }
   }
   groups.push(cur);
 
   for (const grp of groups) {
-    const duration = clusterDurationMs(grp.map(c => c.iv));
-    if (duration >= 20 * MIN) {
+    const duration  = clusterDurationMs(grp.map(c => c.iv));
+    const totalVol  = grp.reduce((s, c) => s + c.iv.volume, 0);
+    if (duration >= 15 * MIN && totalVol >= 0.9) {
       for (const { i } of grp) otherIdxs.add(i);
     }
   }
@@ -157,45 +155,36 @@ function applyDishwasherDetection(intervals) {
 }
 
 // Rule 2: Event-log matching → DISHWASHER
-// For each logged dishwasher event at time T, find the closest interval cluster
-// within ±15 min and reclassify
-function applyEventLogMatching(intervals, eventLog, targetDate) {
-  const dishwasherEvents = (eventLog ?? []).filter(e => {
-    const appliance = String(e.appliance ?? '').toLowerCase();
-    return appliance.includes('dishwasher');
-  });
+// Uses time-of-day comparison (UTC hours+minutes) to avoid date-offset mismatches
+// between event log timestamps (local ISO strings) and Metron timestamps (local-as-UTC).
+function applyEventLogMatching(intervals, eventLog) {
+  const dishwasherEvents = (eventLog ?? []).filter(e =>
+    String(e.appliance ?? '').toLowerCase().includes('dishwasher')
+  );
 
   if (!dishwasherEvents.length) return;
 
   let reclassified = 0;
 
   for (const evt of dishwasherEvents) {
-    // Parse event start time; skip if it's not on the target date
     const evtTime = evt.startTime ? new Date(evt.startTime) : null;
     if (!evtTime || isNaN(evtTime)) continue;
-    if (evtTime.toISOString().slice(0, 10) !== targetDate) continue;
 
-    const WINDOW = 15 * MIN;
+    const evtTodMin = evtTime.getUTCHours() * 60 + evtTime.getUTCMinutes();
+    const WINDOW_MIN = 15;
 
-    // Find the cluster whose centroid is nearest to evtTime
-    const nearby = intervals.filter(iv => iv.time && Math.abs(iv.time - evtTime) <= WINDOW);
-
-    if (!nearby.length) {
-      console.log(`Rule 2: no intervals within ±15 min of logged event at ${evtTime.toISOString()}`);
-      continue;
-    }
-
-    // Find the cluster containing those nearby intervals
-    const nearbyTimes = new Set(nearby.map(iv => iv.time?.toISOString()));
     let count = 0;
     for (let i = 0; i < intervals.length; i++) {
-      if (nearbyTimes.has(intervals[i].time?.toISOString())) {
+      const iv = intervals[i];
+      if (!iv.time) continue;
+      const ivTodMin = iv.time.getUTCHours() * 60 + iv.time.getUTCMinutes();
+      if (Math.abs(ivTodMin - evtTodMin) <= WINDOW_MIN) {
         intervals[i] = { ...intervals[i], classification: 'DISHWASHER', correctedBy: 'rule2' };
         count++;
       }
     }
     reclassified += count;
-    console.log(`Rule 2: reclassified ${count} intervals → DISHWASHER (event at ${evtTime.toISOString()})`);
+    console.log(`Rule 2: reclassified ${count} intervals → DISHWASHER (TOD ${Math.floor(evtTodMin/60)}:${String(evtTodMin%60).padStart(2,'0')})`);
   }
 
   if (!reclassified) console.log('Rule 2: no matching interval clusters found');
@@ -326,7 +315,7 @@ async function main() {
 
     // ── apply rules (mutates intervals array) ──
     applyDishwasherDetection(intervals);
-    applyEventLogMatching(intervals, eventLog, targetDate);
+    applyEventLogMatching(intervals, eventLog);
     applyToiletSplit(intervals);
 
     const after = {};
