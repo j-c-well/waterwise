@@ -46,6 +46,7 @@ module.exports = async function handler(req, res) {
         shower:         cf.shower,
         dishwasher:     cf.dishwasher,      // corrected engine already uses "dishwasher"
         washingMachine: cf.washingMachine,
+        bidet:          cf.bidet,           // { wash, refill, selfClean, total } — present if bidetSeat in profile
         other:          cf.other,
         date:           data.fixtures?.date ?? data.consumptionDate,
       };

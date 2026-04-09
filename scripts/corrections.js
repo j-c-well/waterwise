@@ -135,8 +135,8 @@ function dishwasherThresholds(profile) {
       volumeMin:   0.01,   // G per interval
       volumeMax:   0.25,
       gapMin:      5,      // minutes between draws
-      durationMin: 15,     // minimum cluster span (minutes)
-      totalMin:    0.8,    // minimum cluster total (gallons)
+      durationMin: 20,     // minimum cluster span (minutes) — Bosch cycles run ≥ 60 min
+      totalMin:    2.5,    // minimum cluster total (gallons) — Bosch HE uses 3.5G/cycle; allow partial capture
       lookback:    30,     // Rule 2 match window before logged start (minutes)
       forward:     90,     // Rule 2 match window after logged start (minutes)
     };
@@ -260,6 +260,74 @@ function applyToiletSplit(intervals) {
   console.log(`Rule 3: toilet split — ${half} half-flush, ${full} full-flush`);
 }
 
+// Rule 4: Bidet seat detection — requires profile.bidetSeat (any truthy value)
+// Three sub-patterns:
+//   a) Small OTHER 0–3 min BEFORE a full flush → BIDET_WASH
+//   b) Small OTHER/SINK 1–4 min AFTER a full flush → BIDET_REFILL
+//   c) Isolated overnight OTHER (11pm–6am) single interval → BIDET_SELFCLEAN
+function applyBidetDetection(intervals, profile) {
+  if (!profile?.bidetSeat) return 0;
+  let count = 0;
+
+  for (let i = 0; i < intervals.length; i++) {
+    const flush = intervals[i];
+    if (flush.classification !== 'TOILET_FULL' || flush.volume < 1.2 || !flush.time) continue;
+
+    const flushTs = flush.time.getTime();
+
+    // (a) pre-flush wash
+    for (let j = 0; j < i; j++) {
+      const pre = intervals[j];
+      if (!pre.time) continue;
+      if (pre.classification === 'BIDET_WASH' || pre.classification === 'BIDET_REFILL') continue;
+      const diffMin = (flushTs - pre.time.getTime()) / MIN;
+      if (diffMin < 0 || diffMin > 3) continue;
+      if (pre.classification !== 'OTHER' && pre.classification !== 'UNKNOWN') continue;
+      if (pre.volume < 0.05 || pre.volume > 0.20) continue;
+      intervals[j] = { ...pre, classification: 'BIDET_WASH', correctedBy: 'rule4', correctionRule: 'bidet-pre-flush' };
+      count++;
+    }
+
+    // (b) post-flush tank refill
+    for (let j = i + 1; j < intervals.length; j++) {
+      const post = intervals[j];
+      if (!post.time) continue;
+      if (post.classification === 'BIDET_WASH' || post.classification === 'BIDET_REFILL') continue;
+      const diffMin = (post.time.getTime() - flushTs) / MIN;
+      if (diffMin < 1 || diffMin > 4) continue;
+      const cls = post.classification;
+      if (cls !== 'OTHER' && cls !== 'UNKNOWN' && cls !== 'SINK') continue;
+      if (post.volume < 0.05 || post.volume > 0.25) continue;
+      intervals[j] = { ...post, classification: 'BIDET_REFILL', correctedBy: 'rule4', correctionRule: 'bidet-post-flush' };
+      count++;
+    }
+  }
+
+  // (c) overnight self-clean cycles
+  for (let i = 0; i < intervals.length; i++) {
+    const iv = intervals[i];
+    if (iv.classification !== 'OTHER' && iv.classification !== 'UNKNOWN') continue;
+    if (!iv.time) continue;
+    if (iv.volume < 0.04 || iv.volume > 0.12) continue;
+
+    const h = iv.time.getUTCHours();
+    if (h >= 6 && h < 23) continue; // not overnight
+
+    const ts = iv.time.getTime();
+    const isolated = intervals.every((other, j) => {
+      if (j === i || !other.time || other.volume <= 0) return true;
+      return Math.abs(other.time.getTime() - ts) > 10 * MIN;
+    });
+    if (!isolated) continue;
+
+    intervals[i] = { ...iv, classification: 'BIDET_SELFCLEAN', correctedBy: 'rule4', correctionRule: 'bidet-selfclean' };
+    count++;
+  }
+
+  console.log(`Rule 4: bidet — ${count} intervals reclassified (BIDET_WASH/REFILL/SELFCLEAN)`);
+  return count;
+}
+
 // ── fixture summary ───────────────────────────────────────────────────────────
 
 function buildCorrectedFixtures(intervals) {
@@ -291,6 +359,11 @@ function buildCorrectedFixtures(intervals) {
 
   const dishwasher = round(sum['DISHWASHER'] ?? 0);
 
+  const bidetWash      = round(sum['BIDET_WASH']      ?? 0);
+  const bidetRefill    = round(sum['BIDET_REFILL']    ?? 0);
+  const bidetSelfClean = round(sum['BIDET_SELFCLEAN'] ?? 0);
+  const bidetTotal     = round(bidetWash + bidetRefill + bidetSelfClean);
+
   const other = round(
     (sum['OTHER'] ?? 0) + (sum['UNKNOWN'] ?? 0) + (sum['OUTDOOR'] ?? 0) +
     (sum['IRRIGATION'] ?? 0) + (sum['LEAK'] ?? 0)
@@ -302,6 +375,7 @@ function buildCorrectedFixtures(intervals) {
     dishwasher,
     shower,
     washingMachine,
+    bidet:         { wash: bidetWash, refill: bidetRefill, selfClean: bidetSelfClean, total: bidetTotal },
     other,
     // Pass-through raw sums for debugging
     _rawSums: Object.fromEntries(
@@ -370,6 +444,7 @@ async function main() {
     applyDishwasherDetection(intervals, profile);
     applyEventLogMatching(intervals, eventLog, profile);
     applyToiletSplit(intervals);
+    applyBidetDetection(intervals, profile);
 
     const after = {};
     for (const iv of intervals) after[iv.classification] = (after[iv.classification] ?? 0) + 1;

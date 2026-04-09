@@ -165,8 +165,8 @@ function dishwasherThresholds(profile) {
       volumeMin:   0.01,
       volumeMax:   0.25,
       gapMin:      5,
-      durationMin: 15,
-      totalMin:    0.8,
+      durationMin: 20,   // Bosch cycles run ≥ 60 min; 20 min minimum avoids short false positives
+      totalMin:    2.5,  // Bosch HE uses 3.5G/cycle; 2.5G allows for partial capture
       lookback:    30,
       forward:     90,
     };
@@ -278,6 +278,73 @@ function applyRule3(intervals, profile) {
   }
 }
 
+// Rule 5: Bidet seat detection — requires profile.bidetSeat (any truthy value)
+// Three sub-patterns:
+//   a) Small OTHER 0–3 min BEFORE a full flush → BIDET_WASH
+//   b) Small OTHER/SINK 1–4 min AFTER a full flush → BIDET_REFILL
+//   c) Isolated overnight OTHER (11pm–6am) single interval → BIDET_SELFCLEAN
+function applyRule5(intervals, profile) {
+  if (!profile?.bidetSeat) return 0;
+  let count = 0;
+
+  for (let i = 0; i < intervals.length; i++) {
+    const flush = intervals[i];
+    if (flush.classification !== 'TOILET_FULL' || flush.volume < 1.2 || !flush.time) continue;
+
+    const flushTs = flush.time.getTime();
+
+    // (a) pre-flush wash
+    for (let j = 0; j < i; j++) {
+      const pre = intervals[j];
+      if (!pre.time) continue;
+      if (pre.classification === 'BIDET_WASH' || pre.classification === 'BIDET_REFILL') continue;
+      const diffMin = (flushTs - pre.time.getTime()) / MIN_MS;
+      if (diffMin < 0 || diffMin > 3) continue;
+      if (pre.classification !== 'OTHER' && pre.classification !== 'UNKNOWN') continue;
+      if (pre.volume < 0.05 || pre.volume > 0.20) continue;
+      intervals[j] = { ...pre, classification: 'BIDET_WASH', correctedBy: 'rule5', correctionRule: 'bidet-pre-flush', confidence: 'high' };
+      count++;
+    }
+
+    // (b) post-flush tank refill
+    for (let j = i + 1; j < intervals.length; j++) {
+      const post = intervals[j];
+      if (!post.time) continue;
+      if (post.classification === 'BIDET_WASH' || post.classification === 'BIDET_REFILL') continue;
+      const diffMin = (post.time.getTime() - flushTs) / MIN_MS;
+      if (diffMin < 1 || diffMin > 4) continue;
+      const cls = post.classification;
+      if (cls !== 'OTHER' && cls !== 'UNKNOWN' && cls !== 'SINK') continue;
+      if (post.volume < 0.05 || post.volume > 0.25) continue;
+      intervals[j] = { ...post, classification: 'BIDET_REFILL', correctedBy: 'rule5', correctionRule: 'bidet-post-flush', confidence: 'high' };
+      count++;
+    }
+  }
+
+  // (c) overnight self-clean cycles
+  for (let i = 0; i < intervals.length; i++) {
+    const iv = intervals[i];
+    if (iv.classification !== 'OTHER' && iv.classification !== 'UNKNOWN') continue;
+    if (!iv.time) continue;
+    if (iv.volume < 0.04 || iv.volume > 0.12) continue;
+
+    const h = iv.time.getUTCHours();
+    if (h >= 6 && h < 23) continue; // not overnight
+
+    const ts = iv.time.getTime();
+    const isolated = intervals.every((other, j) => {
+      if (j === i || !other.time || other.volume <= 0) return true;
+      return Math.abs(other.time.getTime() - ts) > 10 * MIN_MS;
+    });
+    if (!isolated) continue;
+
+    intervals[i] = { ...iv, classification: 'BIDET_SELFCLEAN', correctedBy: 'rule5', correctionRule: 'bidet-selfclean', confidence: 'high' };
+    count++;
+  }
+
+  return count;
+}
+
 // Rule 4: sustained "Toilet" > 3 consecutive intervals at > 1.0G → shower
 // (handles Metron misclassifying long showers as toilet)
 function applyRule4(intervals) {
@@ -330,30 +397,38 @@ const CLS_TO_KEY = {
   WASHING_MACHINE: 'washingMachine',
   CLOTHES_WASHER:  'washingMachine',
   CLOTHESWASHER:   'washingMachine',
+  BIDET_WASH:      'bidet',
+  BIDET_REFILL:    'bidet',
+  BIDET_SELFCLEAN: 'bidet',
 };
 
 function buildSummary(intervals) {
-  const totals = { toilet: 0, shower: 0, sink: 0, dishwasher: 0, washingMachine: 0, other: 0 };
-  const toiletHalf = { count: 0, total: 0 };
-  const toiletFull = { count: 0, total: 0 };
+  const totals = { toilet: 0, shower: 0, sink: 0, dishwasher: 0, washingMachine: 0, bidet: 0, other: 0 };
+  const toiletHalf  = { count: 0, total: 0 };
+  const toiletFull  = { count: 0, total: 0 };
+  const bidetSub    = { wash: 0, refill: 0, selfClean: 0 };
 
   for (const iv of intervals) {
     const key = CLS_TO_KEY[iv.classification] ?? 'other';
     totals[key] = (totals[key] ?? 0) + iv.volume;
 
-    if (iv.classification === 'TOILET_HALF') { toiletHalf.count++; toiletHalf.total += iv.volume; }
-    if (iv.classification === 'TOILET_FULL') { toiletFull.count++; toiletFull.total += iv.volume; }
+    if (iv.classification === 'TOILET_HALF')     { toiletHalf.count++; toiletHalf.total += iv.volume; }
+    if (iv.classification === 'TOILET_FULL')     { toiletFull.count++; toiletFull.total += iv.volume; }
+    if (iv.classification === 'BIDET_WASH')      bidetSub.wash      += iv.volume;
+    if (iv.classification === 'BIDET_REFILL')    bidetSub.refill    += iv.volume;
+    if (iv.classification === 'BIDET_SELFCLEAN') bidetSub.selfClean += iv.volume;
   }
 
   const r = (v) => Math.round(v * 10) / 10;
 
   return {
-    toilet:        { total: r(totals.toilet), halfFlush: toiletHalf.count, fullFlush: toiletFull.count },
-    shower:        { total: r(totals.shower) },
-    sink:          { total: r(totals.sink) },
-    dishwasher:    { total: r(totals.dishwasher) },
-    washingMachine:{ total: r(totals.washingMachine) },
-    other:         { total: r(totals.other) },
+    toilet:         { total: r(totals.toilet), halfFlush: toiletHalf.count, fullFlush: toiletFull.count },
+    shower:         { total: r(totals.shower) },
+    sink:           { total: r(totals.sink) },
+    dishwasher:     { total: r(totals.dishwasher) },
+    washingMachine: { total: r(totals.washingMachine) },
+    bidet:          { total: r(totals.bidet), wash: r(bidetSub.wash), refill: r(bidetSub.refill), selfClean: r(bidetSub.selfClean) },
+    other:          { total: r(totals.other) },
   };
 }
 
@@ -365,6 +440,7 @@ function clsToOutput(cls) {
     DISHWASHER: 'dishwasher',
     WASHING_MACHINE: 'washingMachine', CLOTHES_WASHER: 'washingMachine', CLOTHESWASHER: 'washingMachine',
     OTHER: 'other', UNKNOWN: 'other', OUTDOOR: 'other', IRRIGATION: 'other', LEAK: 'other',
+    BIDET_WASH: 'bidet', BIDET_REFILL: 'bidet', BIDET_SELFCLEAN: 'bidet',
   };
   return map[cls] ?? 'other';
 }
@@ -600,6 +676,7 @@ module.exports = async function handler(req, res) {
     corrections += applyRule2(intervals, eventLog, profile);
     applyRule3(intervals, profile);   // split only — doesn't add to count
     corrections += applyRule4(intervals);
+    corrections += applyRule5(intervals, profile);
 
     // Summary runs on ALL corrected intervals before noise filtering
     const summary = buildSummary(intervals);
