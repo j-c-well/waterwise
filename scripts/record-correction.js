@@ -23,11 +23,11 @@ async function main() {
   if (!process.env.REDIS_URL) throw new Error('REDIS_URL not set');
   const redis = new Redis(process.env.REDIS_URL);
   try {
-    const KEY = 'waterwise:corrections:owner';
-    const raw  = await redis.get(KEY);
-    const list = raw ? JSON.parse(raw) : [];
+    // ── 1. Store negative training correction ──
+    const CORR_KEY = 'waterwise:corrections:owner';
+    const raw      = await redis.get(CORR_KEY);
+    const list     = raw ? JSON.parse(raw) : [];
 
-    // Avoid duplicates: skip if same date + timeWindow + appliedRule already recorded
     const isDup = list.some(e =>
       e.date === ENTRY.date &&
       e.timeWindow === ENTRY.timeWindow &&
@@ -35,13 +35,25 @@ async function main() {
     );
     if (isDup) {
       console.log('Correction already recorded — skipping.');
-      return;
+    } else {
+      list.push(ENTRY);
+      await redis.set(CORR_KEY, JSON.stringify(list));
+      console.log(`Saved correction to ${CORR_KEY}. Total entries: ${list.length}`);
     }
 
-    list.push(ENTRY);
-    await redis.set(KEY, JSON.stringify(list));
-    console.log(`Saved correction to ${KEY}. Total entries: ${list.length}`);
-    console.log(JSON.stringify(ENTRY, null, 2));
+    // ── 2. Ensure bidetSeat is set in household profile ──
+    const PROFILE_KEY = 'waterwise:household:owner';
+    const profileRaw  = await redis.get(PROFILE_KEY);
+    const profile     = profileRaw ? JSON.parse(profileRaw) : {};
+
+    if (!profile.bidetSeat) {
+      profile.bidetSeat = { brand: 'TOTO', type: 'heated-tank', confirmed: true };
+      profile.updatedAt = new Date().toISOString();
+      await redis.set(PROFILE_KEY, JSON.stringify(profile));
+      console.log('Added bidetSeat to household profile:', JSON.stringify(profile.bidetSeat));
+    } else {
+      console.log('bidetSeat already in profile — skipping.');
+    }
   } finally {
     await redis.quit();
   }
