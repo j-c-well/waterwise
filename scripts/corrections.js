@@ -10,34 +10,74 @@ function yesterdayDate() {
   return d.toISOString().slice(0, 10);
 }
 
-// Accept any reasonable field-name variant from Metron's response
-function normalizeInterval(item) {
-  const timeRaw = item.StartTime ?? item.startTime ?? item.Timestamp ?? item.timestamp ??
-                  item.IntervalStart ?? item.intervalStart ?? null;
-  const volume  = parseFloat(
-    item.Volume ?? item.volume ?? item.GallonsUsed ?? item.gallons ??
-    item.Value  ?? item.value  ?? 0
-  );
-  const cls = String(
-    item.Classification ?? item.classification ??
-    item.EventType      ?? item.eventType      ??
-    item.Category       ?? item.category       ?? 'UNKNOWN'
-  ).toUpperCase().replace(/[\s-]/g, '_');
+// Metron's actual format: one row per minute-slot, all classifications as columns
+// {"ConsumptionChartDate":"/Date(ms)/","Toilet":0.12,"Shower":null,...}
+const METRON_CLS_FIELDS = [
+  ['Toilet',           'TOILET'],
+  ['WashingMachine',   'WASHING_MACHINE'],
+  ['Shower',           'SHOWER'],
+  ['BathTub',          'BATHTUB'],
+  ['HouseholdUse',     'SINK'],
+  ['Sink',             'SINK'],
+  ['Irrigation',       'IRRIGATION'],
+  ['Leak',             'LEAK'],
+  ['IntermittentLeak', 'LEAK'],
+  ['Other',            'OTHER'],
+];
 
-  return { time: timeRaw ? new Date(timeRaw) : null, volume, classification: cls, raw: item };
+function parseMsDate(val) {
+  if (!val) return null;
+  const m = String(val).match(/\/Date\((-?\d+)\)\//);
+  if (m) return new Date(parseInt(m[1], 10));
+  const d = new Date(val);
+  return isNaN(d) ? null : d;
+}
+
+function expandRow(item) {
+  const time = parseMsDate(
+    item.ConsumptionChartDate ?? item.consumptionChartDate ??
+    item.StartTime ?? item.startTime ?? item.Timestamp ?? item.timestamp
+  );
+  const events = [];
+  for (const [field, cls] of METRON_CLS_FIELDS) {
+    const vol = parseFloat(item[field] ?? 0);
+    if (vol > 0) events.push({ time, volume: Math.round(vol * 1000) / 1000, classification: cls, raw: item });
+  }
+  if (!events.length) {
+    const vol = parseFloat(item.Volume ?? item.volume ?? item.dailyLog ?? 0);
+    const cls = String(item.Classification ?? item.classification ?? 'UNKNOWN').toUpperCase().replace(/[\s-]/g, '_');
+    if (vol > 0) events.push({ time, volume: Math.round(vol * 1000) / 1000, classification: cls, raw: item });
+  }
+  return events;
 }
 
 // Extract a flat array of intervals from whatever shape the API returned
 function extractIntervals(stored) {
-  if (Array.isArray(stored))         return stored.map(normalizeInterval);
-  if (Array.isArray(stored?.data))   return stored.data.map(normalizeInterval);
-  if (Array.isArray(stored?.Data))   return stored.Data.map(normalizeInterval);
-  if (Array.isArray(stored?.intervals)) return stored.intervals.map(normalizeInterval);
-  // Fallback: try all top-level array-valued keys
-  for (const v of Object.values(stored ?? {})) {
-    if (Array.isArray(v) && v.length > 0) return v.map(normalizeInterval);
-  }
-  return [];
+  const rows = Array.isArray(stored)            ? stored
+             : Array.isArray(stored?.data)      ? stored.data
+             : Array.isArray(stored?.Data)       ? stored.Data
+             : Array.isArray(stored?.intervals) ? stored.intervals
+             : (() => {
+                 for (const v of Object.values(stored ?? {})) {
+                   if (Array.isArray(v) && v.length > 0) return v;
+                 }
+                 return [];
+               })();
+
+  const first = rows[0];
+  const isMultiColumn = first && (
+    'ConsumptionChartDate' in first || 'consumptionChartDate' in first ||
+    METRON_CLS_FIELDS.some(([f]) => f in first)
+  );
+
+  if (isMultiColumn) return rows.flatMap(expandRow);
+
+  return rows.map(item => {
+    const t = item.StartTime ?? item.startTime ?? item.Timestamp ?? item.timestamp ?? null;
+    const v = parseFloat(item.Volume ?? item.volume ?? item.Value ?? 0);
+    const c = String(item.Classification ?? item.EventType ?? 'UNKNOWN').toUpperCase().replace(/[\s-]/g, '_');
+    return { time: t ? new Date(t) : null, volume: isNaN(v) ? 0 : Math.round(v * 1000) / 1000, classification: c, raw: item };
+  });
 }
 
 // Gap between two intervals in milliseconds

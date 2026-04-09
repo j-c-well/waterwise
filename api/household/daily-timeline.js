@@ -11,45 +11,96 @@ const CORS = (res) => {
 };
 
 // ── interval normalization ────────────────────────────────────────────────────
+// Metron's actual format: one row per minute-slot, all classifications as columns
+// {"ConsumptionChartDate":"/Date(1775606340000)/","Toilet":0.12,"Shower":null,...}
 
-// Accept any reasonable Metron field-name variant
-function normalizeInterval(item) {
-  const timeRaw =
-    item.StartTime    ?? item.startTime    ?? item.Timestamp  ?? item.timestamp  ??
-    item.IntervalTime ?? item.intervalTime ?? item.Time       ?? item.time       ??
-    item.IntervalDate ?? item.intervalDate ?? null;
+// Classification columns present in Metron's multi-column row format
+const METRON_CLS_FIELDS = [
+  ['Toilet',           'TOILET'],
+  ['WashingMachine',   'WASHING_MACHINE'],
+  ['Shower',           'SHOWER'],
+  ['BathTub',          'BATHTUB'],
+  ['HouseholdUse',     'SINK'],
+  ['Sink',             'SINK'],
+  ['Irrigation',       'IRRIGATION'],
+  ['Leak',             'LEAK'],
+  ['IntermittentLeak', 'LEAK'],
+  ['Other',            'OTHER'],
+];
 
-  const volume = parseFloat(
-    item.Volume       ?? item.volume       ?? item.GallonsUsed ?? item.gallons   ??
-    item.Value        ?? item.value        ?? item.FlowVolume  ?? item.flowVolume ?? 0
+// Parse Microsoft's /Date(ms)/ JSON date format
+function parseMsDate(val) {
+  if (!val) return null;
+  const m = String(val).match(/\/Date\((-?\d+)\)\//);
+  if (m) return new Date(parseInt(m[1], 10));
+  const d = new Date(val);
+  return isNaN(d) ? null : d;
+}
+
+// Expand one multi-column Metron row into 0–N single-classification intervals
+function expandRow(item) {
+  const time = parseMsDate(
+    item.ConsumptionChartDate ?? item.consumptionChartDate ??
+    item.StartTime ?? item.startTime ?? item.Timestamp ?? item.timestamp
   );
 
-  const rawCls = String(
-    item.Classification ?? item.classification ??
-    item.EventType      ?? item.eventType      ??
-    item.Category       ?? item.category       ??
-    item.FlowType       ?? item.flowType       ?? 'UNKNOWN'
-  );
+  const events = [];
+  for (const [field, cls] of METRON_CLS_FIELDS) {
+    const vol = parseFloat(item[field] ?? 0);
+    if (vol > 0) {
+      events.push({
+        time,
+        volume:         Math.round(vol * 1000) / 1000,
+        metronRaw:      field,
+        classification: cls,
+      });
+    }
+  }
 
-  return {
-    time:          timeRaw ? new Date(timeRaw) : null,
-    volume:        isNaN(volume) ? 0 : Math.round(volume * 1000) / 1000,
-    // Preserve original exactly; uppercase for rule matching
-    metronRaw:     rawCls,
-    classification: rawCls.toUpperCase().replace(/[\s\-]/g, '_'),
-  };
+  // Fallback: row has no known classification columns — try generic Volume field
+  if (!events.length) {
+    const vol = parseFloat(item.Volume ?? item.volume ?? item.dailyLog ?? 0);
+    const cls  = String(item.Classification ?? item.classification ?? 'UNKNOWN')
+                   .toUpperCase().replace(/[\s-]/g, '_');
+    if (vol > 0) {
+      events.push({ time, volume: Math.round(vol * 1000) / 1000, metronRaw: cls, classification: cls });
+    }
+  }
+
+  return events;
 }
 
 function extractIntervals(stored) {
-  if (Array.isArray(stored))              return stored.map(normalizeInterval);
-  if (Array.isArray(stored?.data))        return stored.data.map(normalizeInterval);
-  if (Array.isArray(stored?.Data))        return stored.Data.map(normalizeInterval);
-  if (Array.isArray(stored?.intervals))   return stored.intervals.map(normalizeInterval);
-  if (Array.isArray(stored?.Intervals))   return stored.Intervals.map(normalizeInterval);
-  for (const v of Object.values(stored ?? {})) {
-    if (Array.isArray(v) && v.length > 0) return v.map(normalizeInterval);
+  const rows = Array.isArray(stored)             ? stored
+             : Array.isArray(stored?.data)       ? stored.data
+             : Array.isArray(stored?.Data)        ? stored.Data
+             : Array.isArray(stored?.intervals)  ? stored.intervals
+             : Array.isArray(stored?.Intervals)  ? stored.Intervals
+             : (() => {
+                 for (const v of Object.values(stored ?? {})) {
+                   if (Array.isArray(v) && v.length > 0) return v;
+                 }
+                 return [];
+               })();
+
+  // Detect format: if first row has ConsumptionChartDate or any METRON_CLS_FIELDS key → multi-column
+  const first = rows[0];
+  const isMultiColumn = first && (
+    'ConsumptionChartDate' in first || 'consumptionChartDate' in first ||
+    METRON_CLS_FIELDS.some(([f]) => f in first)
+  );
+
+  if (isMultiColumn) {
+    return rows.flatMap(expandRow);
   }
-  return [];
+  // Legacy single-classification-per-row fallback
+  return rows.map(item => {
+    const timeRaw = item.StartTime ?? item.startTime ?? item.Timestamp ?? item.timestamp ?? null;
+    const vol = parseFloat(item.Volume ?? item.volume ?? item.Value ?? 0);
+    const cls = String(item.Classification ?? item.EventType ?? item.Category ?? 'UNKNOWN')
+                  .toUpperCase().replace(/[\s-]/g, '_');
+    return { time: timeRaw ? new Date(timeRaw) : null, volume: isNaN(vol) ? 0 : Math.round(vol * 1000) / 1000, metronRaw: cls, classification: cls };
+  });
 }
 
 // ── time helpers ──────────────────────────────────────────────────────────────
