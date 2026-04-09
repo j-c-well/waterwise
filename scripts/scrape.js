@@ -104,6 +104,33 @@ async function main() {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
 
+    // Intercept all XHR/fetch responses from waterscope.us so we can capture
+    // interval data the dashboard loads automatically, and log all API URLs.
+    const capturedIntervals = { data: null, url: null };
+    page.on('response', async (response) => {
+      const url = response.url();
+      if (!url.includes('waterscope.us')) return;
+      const type = response.request().resourceType();
+      if (type !== 'xhr' && type !== 'fetch') return;
+      console.log('XHR:', response.status(), url);
+      // Capture any response that looks like interval/consumption data
+      if (/Consumption|Interval|History|Usage/i.test(url)) {
+        try {
+          const text = await response.text();
+          const json = JSON.parse(text);
+          if (Array.isArray(json) && json.length > 0) {
+            capturedIntervals.data = json;
+            capturedIntervals.url  = url;
+            console.log('Captured interval array from:', url, '— length:', json.length);
+          } else if (json && typeof json === 'object') {
+            capturedIntervals.data = json;
+            capturedIntervals.url  = url;
+            console.log('Captured interval object from:', url);
+          }
+        } catch (_) { /* not JSON */ }
+      }
+    });
+
     // Step 1: WaterScope email lookup, click Continue and wait for Azure B2C
     await page.goto('https://waterscope.us/Home/Main', { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.fill('#txtSearchUserName', email);
@@ -340,50 +367,23 @@ async function main() {
         ...snowFields,
       };
 
-      // Fetch daily interval data using Playwright's request API (shares browser session cookies)
+      // Save interval data captured passively from the dashboard's own AJAX calls
       try {
-        // WaterScope expects M/D/YYYY format, not YYYY-MM-DD
-        const [y, m, d] = consumptionDate.split('-');
-        const mdyDate    = `${parseInt(m, 10)}/${parseInt(d, 10)}/${y}`;
-        const startLogDate = `${mdyDate} 12:21:44 AM`;
-        const endLogDate   = startLogDate;
-
-        const intervalResp = await page.request.post(
-          'https://waterscope.us/Consumer/Consumption/ConsumptionHistoryDataClaculation',
-          {
-            headers: { 'X-Requested-With': 'XMLHttpRequest' },
-            form: {
-              numberOfDays: '1',
-              AccountId:    '1735',
-              MeterId:      '3208158',
-              startLogDate,
-              endLogDate,
-            },
-          }
-        );
-
-        console.log('Interval response status:', intervalResp.status());
-        const body = await intervalResp.text();
-        console.log('Interval response body (first 500):', body.slice(0, 500));
-
-        if (intervalResp.ok()) {
-          let intervalData;
-          try {
-            intervalData = JSON.parse(body);
-          } catch (parseErr) {
-            console.error('Interval JSON parse failed — response was not JSON:', parseErr.message);
-          }
-
-          if (intervalData) {
-            const intervalKey = `waterwise:intervals:${consumptionDate}`;
-            await redis.set(intervalKey, JSON.stringify(intervalData), 'EX', 7776000);
-            console.log('Interval data saved to', intervalKey);
-          }
+        if (capturedIntervals.data) {
+          const intervalKey = `waterwise:intervals:${consumptionDate}`;
+          await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 7776000);
+          console.log('Interval data saved to', intervalKey, '(from:', capturedIntervals.url + ')');
+          const sample = Array.isArray(capturedIntervals.data)
+            ? capturedIntervals.data.slice(0, 2)
+            : capturedIntervals.data;
+          console.log('Interval sample:', JSON.stringify(sample));
         } else {
-          console.warn('Interval fetch non-OK status:', intervalResp.status());
+          console.warn('No interval data was captured from dashboard XHR calls');
+          // Log what we DID see for diagnosis
+          console.log('Dashboard URL at scrape time:', page.url());
         }
       } catch (e) {
-        console.error('Interval fetch failed (non-fatal):', e.message);
+        console.error('Interval save failed (non-fatal):', e.message);
       }
 
       const dateKey = `waterwise:${consumptionDate}`;
