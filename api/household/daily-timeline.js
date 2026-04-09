@@ -322,6 +322,8 @@ function clsToOutput(cls) {
   return map[cls] ?? 'other';
 }
 
+const CONF_RANK = { low: 0, medium: 1, high: 2 };
+
 function confidenceFor(iv) {
   if (iv.confidence) return iv.confidence;
   if (iv.correctedBy === 'rule2') return 'high';
@@ -329,6 +331,95 @@ function confidenceFor(iv) {
   if (iv.correctedBy) return 'medium';
   return 'high';
 }
+
+// ── grouping ──────────────────────────────────────────────────────────────────
+
+// Group consecutive same-classification intervals (≤ 3 min gap) into single events.
+// Groups by output classification key + corrected flag so that reclassified runs
+// don't merge with adjacent uncorrected intervals of the same type.
+function groupIntervals(intervals) {
+  const groups = [];
+  let cur = null;
+
+  for (const iv of intervals) {
+    if (iv.volume <= 0) continue;
+    const outCls   = clsToOutput(iv.classification);
+    const corrected = !!iv.correctedBy;
+
+    if (
+      cur &&
+      cur.outCls   === outCls &&
+      cur.corrected === corrected &&
+      iv.time &&
+      gapMs(cur.last, iv) <= 3 * MIN_MS
+    ) {
+      cur.ivs.push(iv);
+      cur.last = iv;
+    } else {
+      if (cur) groups.push(cur);
+      cur = { outCls, corrected, ivs: [iv], last: iv };
+    }
+  }
+  if (cur) groups.push(cur);
+  return groups;
+}
+
+function formatDisplayTime(start, end) {
+  if (!end || start === end) return start;
+  // "6:18 AM–6:27 AM" → if same period, compress to "6:18–6:27 AM"
+  const sM = start.match(/^(.+) (AM|PM)$/);
+  const eM = end.match(/^(.+) (AM|PM)$/);
+  if (sM && eM && sM[2] === eM[2]) return `${sM[1]}–${end}`;
+  return `${start}–${end}`;
+}
+
+function buildEvent(grp) {
+  const { ivs, outCls, corrected } = grp;
+  const first = ivs[0];
+  const last  = ivs[ivs.length - 1];
+
+  const gallons   = Math.round(ivs.reduce((s, iv) => s + iv.volume, 0) * 100) / 100;
+  const duration  = (first.time && last.time && ivs.length > 1)
+    ? Math.round((last.time - first.time) / MIN_MS)
+    : 0;
+
+  const timeStart = formatTime(first.time);
+  const timeEnd   = (ivs.length > 1 && timeStart !== formatTime(last.time))
+    ? formatTime(last.time) : null;
+  const displayTime = formatDisplayTime(timeStart, timeEnd);
+
+  // Most-common original Metron classification label across the group
+  const rawTally = {};
+  for (const iv of ivs) rawTally[iv.metronRaw] = (rawTally[iv.metronRaw] ?? 0) + 1;
+  const metronClassification = Object.entries(rawTally).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+  // Lowest confidence wins (most conservative)
+  const confidence = ivs.reduce((worst, iv) => {
+    const c = confidenceFor(iv);
+    return CONF_RANK[c] < CONF_RANK[worst] ? c : worst;
+  }, 'high');
+
+  // First non-null correction rule
+  const correctionRule = ivs.find(iv => iv.correctionRule)?.correctionRule ?? null;
+
+  const event = {
+    timeStart,
+    displayTime,
+    gallons,
+    duration,
+    classification:        outCls,
+    metronClassification,
+    corrected,
+    confidence,
+    correctionRule,
+    intervalCount:         ivs.length,
+  };
+  if (timeEnd) event.timeEnd = timeEnd;
+  return event;
+}
+
+// Noise threshold: drop uncorrected "other" groups below this volume (gallons)
+const OTHER_NOISE_FLOOR = 0.05;
 
 // ── handler ───────────────────────────────────────────────────────────────────
 
@@ -360,7 +451,7 @@ module.exports = async function handler(req, res) {
     const profile  = profileRaw  ? JSON.parse(profileRaw)  : null;
     const eventLog = eventLogRaw ? JSON.parse(eventLogRaw) : [];
 
-    // Normalize and sort
+    // Normalize and sort chronologically
     const intervals = extractIntervals(stored);
     intervals.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
 
@@ -368,41 +459,45 @@ module.exports = async function handler(req, res) {
       return res.status(422).json({ error: 'Interval data present but could not be parsed', raw: stored });
     }
 
-    // Apply corrections (mutates intervals)
+    // Apply corrections (mutate intervals in-place)
     let corrections = 0;
     corrections += applyRule1(intervals);
-    corrections += applyRule2(intervals, eventLog, date);
+    corrections += applyRule2(intervals, eventLog);
     applyRule3(intervals, profile);   // split only — doesn't add to count
     corrections += applyRule4(intervals);
 
-    // Build events list — skip zero-volume intervals
-    const events = intervals
-      .filter(iv => iv.volume > 0)
-      .map(iv => {
-        const entry = {
-          time:                 formatTime(iv.time),
-          gallons:              iv.volume,
-          classification:       clsToOutput(iv.classification),
-          metronClassification: iv.metronRaw,
-          corrected:            !!iv.correctedBy,
-          confidence:           confidenceFor(iv),
-        };
-        if (iv.correctionRule) entry.correctionRule = iv.correctionRule;
-        return entry;
-      });
+    // Summary runs on ALL corrected intervals before noise filtering
+    const summary = buildSummary(intervals);
+
+    // Group consecutive same-classification intervals → one event per use
+    const groups = groupIntervals(intervals);
+
+    // Filter noise: drop uncorrected "other" groups below the noise floor
+    const filtered = groups.filter(grp =>
+      grp.outCls !== 'other' ||
+      grp.corrected ||
+      grp.ivs.reduce((s, iv) => s + iv.volume, 0) >= OTHER_NOISE_FLOOR
+    );
+
+    const events = filtered.map(buildEvent);
 
     const body = {
       date,
       timezone: 'local-as-utc',
       events,
-      summary:     buildSummary(intervals),
+      summary,
       corrections,
     };
 
-    // Attach raw sample in non-prod so we can see Metron's field names
+    // Raw sample in non-prod for debugging Metron field names
     if (process.env.NODE_ENV !== 'production') {
       const raw = Array.isArray(stored) ? stored : Object.values(stored)[0];
-      body._meta = { rawSample: Array.isArray(raw) ? raw.slice(0, 3) : raw, totalIntervals: intervals.length };
+      body._meta = {
+        rawSample:      Array.isArray(raw) ? raw.slice(0, 3) : raw,
+        totalIntervals: intervals.length,
+        totalGroups:    groups.length,
+        afterFilter:    filtered.length,
+      };
     }
 
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
