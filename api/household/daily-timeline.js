@@ -334,24 +334,31 @@ function confidenceFor(iv) {
 
 // ── grouping ──────────────────────────────────────────────────────────────────
 
-// Group consecutive same-classification intervals (≤ 3 min gap) into single events.
-// Groups by output classification key + corrected flag so that reclassified runs
-// don't merge with adjacent uncorrected intervals of the same type.
+// Group consecutive same-classification intervals into single events.
+// Gap tolerances:
+//   shower  — 5 min (concurrent sink adjustments during a shower don't break the group;
+//             we allow a slightly wider window so interleaved temp-adjust blips are skipped)
+//   default — 3 min
+// Groups by output classification key + corrected flag.
+const GAP_BY_CLS = { shower: 5 * MIN_MS };
+const DEFAULT_GAP = 3 * MIN_MS;
+
 function groupIntervals(intervals) {
   const groups = [];
   let cur = null;
 
   for (const iv of intervals) {
     if (iv.volume <= 0) continue;
-    const outCls   = clsToOutput(iv.classification);
+    const outCls    = clsToOutput(iv.classification);
     const corrected = !!iv.correctedBy;
+    const maxGap    = GAP_BY_CLS[outCls] ?? DEFAULT_GAP;
 
     if (
       cur &&
-      cur.outCls   === outCls &&
+      cur.outCls    === outCls &&
       cur.corrected === corrected &&
       iv.time &&
-      gapMs(cur.last, iv) <= 3 * MIN_MS
+      gapMs(cur.last, iv) <= maxGap
     ) {
       cur.ivs.push(iv);
       cur.last = iv;
@@ -418,8 +425,29 @@ function buildEvent(grp) {
   return event;
 }
 
-// Noise threshold: drop uncorrected "other" groups below this volume (gallons)
-const OTHER_NOISE_FLOOR = 0.05;
+// ── noise filter ─────────────────────────────────────────────────────────────
+
+function shouldKeep(grp) {
+  const gallons  = grp.ivs.reduce((s, iv) => s + iv.volume, 0);
+  const duration = grp.ivs.length > 1 && grp.ivs[0].time && grp.ivs.at(-1).time
+    ? Math.round((grp.ivs.at(-1).time - grp.ivs[0].time) / MIN_MS)
+    : 0;
+
+  // Rule 1 — drop ALL uncorrected "other" unless sustained unknown use
+  if (grp.outCls === 'other') {
+    if (grp.corrected) return true;                        // event-log matched
+    if (duration >= 10 && gallons >= 0.5) return true;    // sustained unknown
+    return false;
+  }
+
+  // Rule 2 — drop single-interval sink/toilet artifacts < 0.08G
+  if (grp.ivs.length === 1 && gallons < 0.08 &&
+      (grp.outCls === 'sink' || grp.outCls === 'toilet')) {
+    return false;
+  }
+
+  return true;
+}
 
 // ── handler ───────────────────────────────────────────────────────────────────
 
@@ -472,12 +500,7 @@ module.exports = async function handler(req, res) {
     // Group consecutive same-classification intervals → one event per use
     const groups = groupIntervals(intervals);
 
-    // Filter noise: drop uncorrected "other" groups below the noise floor
-    const filtered = groups.filter(grp =>
-      grp.outCls !== 'other' ||
-      grp.corrected ||
-      grp.ivs.reduce((s, iv) => s + iv.volume, 0) >= OTHER_NOISE_FLOOR
-    );
+    const filtered = groups.filter(shouldKeep);
 
     const events = filtered.map(buildEvent);
 
