@@ -143,27 +143,69 @@ function spanMs(grp) {
   return grp[grp.length - 1].time - grp[0].time;
 }
 
+// ── appliance-specific thresholds ────────────────────────────────────────────
+
+function dishwasherThresholds(profile) {
+  const dw =
+    profile?.dishwasher ??
+    profile?.appliances?.dishwasher ??
+    (Array.isArray(profile?.appliances)
+      ? profile.appliances.find(a =>
+          String(a.applianceType ?? a.type ?? '').toLowerCase().includes('dishwasher'))
+      : null);
+
+  const brand = String(dw?.brand ?? '').toLowerCase();
+  const model = String(dw?.model ?? '').toUpperCase();
+
+  const isBosch = brand.includes('bosch') || /^SH[PEV]|^SPE/.test(model);
+
+  if (isBosch) {
+    return {
+      label:       `Bosch HE (${dw?.model ?? 'unknown model'})`,
+      volumeMin:   0.01,
+      volumeMax:   0.25,
+      gapMin:      5,
+      durationMin: 15,
+      totalMin:    0.8,
+      lookback:    30,
+      forward:     90,
+    };
+  }
+
+  return {
+    label:       'generic dishwasher',
+    volumeMin:   0.01,
+    volumeMax:   0.20,
+    gapMin:      3,
+    durationMin: 15,
+    totalMin:    0.9,
+    lookback:    15,
+    forward:     15,
+  };
+}
+
 // ── correction rules ──────────────────────────────────────────────────────────
 
 // Rule 1: sustained OTHER/UNKNOWN bursts → dishwasher
-// Pattern: 0.01–0.20G per interval, ≤ 3 min gap, cluster spans ≥ 15 min, total ≥ 0.9G
-// (0.9G threshold catches the real Bosch HE pattern; user-stated 1.0G rounds up naturally)
-function applyRule1(intervals) {
+// Thresholds sourced from confirmed household appliance profile when available.
+function applyRule1(intervals, profile) {
+  const thresh = dishwasherThresholds(profile);
   let count = 0;
   const candidates = intervals
     .map((iv, i) => ({ iv, i }))
     .filter(({ iv }) =>
       (iv.classification === 'OTHER' || iv.classification === 'UNKNOWN') &&
-      iv.volume >= 0.01 && iv.volume <= 0.20
+      iv.volume >= thresh.volumeMin && iv.volume <= thresh.volumeMax
     );
 
   if (!candidates.length) return count;
 
-  // Sub-group by time proximity (≤ 3 min gap)
+  const gapLimit = thresh.gapMin * MIN_MS;
+
   const groups = [];
   let cur = [candidates[0]];
   for (let k = 1; k < candidates.length; k++) {
-    if (gapMs(candidates[k - 1].iv, candidates[k].iv) <= 3 * MIN_MS) {
+    if (gapMs(candidates[k - 1].iv, candidates[k].iv) <= gapLimit) {
       cur.push(candidates[k]);
     } else {
       groups.push(cur); cur = [candidates[k]];
@@ -173,7 +215,7 @@ function applyRule1(intervals) {
 
   for (const grp of groups) {
     const totalVol = grp.reduce((s, c) => s + c.iv.volume, 0);
-    if (spanMs(grp.map(c => c.iv)) >= 15 * MIN_MS && totalVol >= 0.9) {
+    if (spanMs(grp.map(c => c.iv)) >= thresh.durationMin * MIN_MS && totalVol >= thresh.totalMin) {
       for (const { i } of grp) {
         intervals[i] = { ...intervals[i], classification: 'DISHWASHER', correctedBy: 'rule1', correctionRule: 'sustained-low-flow-pattern' };
         count++;
@@ -186,7 +228,9 @@ function applyRule1(intervals) {
 // Rule 2: event-log match → reclassify nearest cluster
 // Compares TIME-OF-DAY only (UTC hours+minutes) to avoid date-offset issues
 // between the event log (local-time ISO strings) and Metron timestamps (local-as-UTC).
-function applyRule2(intervals, eventLog) {
+// Asymmetric window: lookback covers pre-wash phase; forward covers full cycle duration.
+function applyRule2(intervals, eventLog, profile) {
+  const thresh = dishwasherThresholds(profile);
   let count = 0;
   const dishEvents = (eventLog ?? []).filter(e =>
     String(e.appliance ?? '').toLowerCase().includes('dishwasher')
@@ -198,20 +242,23 @@ function applyRule2(intervals, eventLog) {
 
     // Time-of-day in minutes (0–1439), read as UTC to match Metron's local-as-UTC storage
     const evtTodMin = evtTime.getUTCHours() * 60 + evtTime.getUTCMinutes();
-    const WINDOW_MIN = 15;
+    const winStart  = evtTodMin - thresh.lookback;
+    const winEnd    = evtTodMin + thresh.forward;
 
     let matched = 0;
     for (let i = 0; i < intervals.length; i++) {
       const iv = intervals[i];
       if (!iv.time) continue;
       const ivTodMin = iv.time.getUTCHours() * 60 + iv.time.getUTCMinutes();
-      if (Math.abs(ivTodMin - evtTodMin) <= WINDOW_MIN) {
+      if (ivTodMin >= winStart && ivTodMin <= winEnd) {
         intervals[i] = { ...iv, classification: 'DISHWASHER', correctedBy: 'rule2', correctionRule: 'event-log-match', confidence: 'high' };
         matched++;
       }
     }
     count += matched;
-    console.log(`Rule 2: matched ${matched} intervals to event at TOD ${Math.floor(evtTodMin/60)}:${String(evtTodMin%60).padStart(2,'0')}`);
+    console.log(`Rule 2 (${thresh.label}): matched ${matched} intervals` +
+      ` (window ${Math.floor(winStart/60)}:${String(winStart%60).padStart(2,'0')}` +
+      `–${Math.floor(winEnd/60)}:${String(winEnd%60).padStart(2,'0')})`);
   }
   return count;
 }
@@ -549,8 +596,8 @@ module.exports = async function handler(req, res) {
 
     // Apply corrections (mutate intervals in-place)
     let corrections = 0;
-    corrections += applyRule1(intervals);
-    corrections += applyRule2(intervals, eventLog);
+    corrections += applyRule1(intervals, profile);
+    corrections += applyRule2(intervals, eventLog, profile);
     applyRule3(intervals, profile);   // split only — doesn't add to count
     corrections += applyRule4(intervals);
 
