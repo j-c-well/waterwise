@@ -340,6 +340,36 @@ async function main() {
         ...snowFields,
       };
 
+      // Fetch daily interval data using the authenticated session
+      try {
+        const startLogDate = `${consumptionDate} 12:21:44 AM`;
+        const endLogDate   = startLogDate;
+        const intervalData = await page.evaluate(async ({ startLogDate, endLogDate }) => {
+          const resp = await fetch('/Consumer/Consumption/ConsumptionHistoryDataClaculation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+            body: new URLSearchParams({
+              numberOfDays: '1',
+              AccountId:    '1735',
+              MeterId:      '3208158',
+              startLogDate,
+              endLogDate,
+            }).toString(),
+          });
+          return resp.ok ? resp.json() : null;
+        }, { startLogDate, endLogDate });
+
+        if (intervalData) {
+          const intervalKey = `waterwise:intervals:${consumptionDate}`;
+          await redis.set(intervalKey, JSON.stringify(intervalData), 'EX', 7776000);
+          console.log('Interval data saved to', intervalKey);
+        } else {
+          console.warn('Interval fetch returned no data');
+        }
+      } catch (e) {
+        console.error('Interval fetch failed (non-fatal):', e.message);
+      }
+
       const dateKey = `waterwise:${consumptionDate}`;
       console.log('Saving to Redis...');
       await Promise.all([
