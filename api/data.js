@@ -13,21 +13,66 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const raw = await redis.get('waterwise:latest');
-    const data = raw ? JSON.parse(raw) : null;
+    const [raw, profileRaw] = await Promise.all([
+      redis.get('waterwise:latest'),
+      redis.get('waterwise:household:owner'),
+    ]);
 
+    const data = raw ? JSON.parse(raw) : null;
     if (!data) {
       return res.status(404).json({ error: 'No data yet — scrape has not run' });
     }
 
     const staleHours = Math.round((Date.now() - new Date(data.scrapedAt)) / 3600000);
     const dataStale  = staleHours > 25;
-
-    const profileRaw     = await redis.get('waterwise:household:owner');
     const householdProfile = profileRaw ? JSON.parse(profileRaw) : null;
 
+    // Fetch corrected interval data for this consumption date (available after corrections.js runs)
+    const correctedRaw = data.consumptionDate
+      ? await redis.get(`waterwise:corrected:${data.consumptionDate}`)
+      : null;
+    const corrected = correctedRaw ? JSON.parse(correctedRaw) : null;
+
+    // Build fixtures: prefer corrected classification; fall back to raw Metron data.
+    // Metron labels the dishwasher as "Kitchen" — rename it here regardless of source.
+    let fixtures;
+    let fixturesSource;
+
+    if (corrected?.correctedFixtures) {
+      const cf = corrected.correctedFixtures;
+      fixtures = {
+        toilet:         cf.toilet,          // { halfFlush, fullFlush, total }
+        sink:           cf.sink,
+        shower:         cf.shower,
+        dishwasher:     cf.dishwasher,      // corrected engine already uses "dishwasher"
+        washingMachine: cf.washingMachine,
+        other:          cf.other,
+        date:           data.fixtures?.date ?? data.consumptionDate,
+      };
+      fixturesSource = 'corrected';
+    } else {
+      const mf = data.fixtures ?? {};
+      fixtures = {
+        toilet:         mf.toilet,
+        sink:           mf.sink,
+        shower:         mf.shower,
+        dishwasher:     mf.kitchen ?? mf.dishwasher ?? 0, // rename kitchen → dishwasher
+        bathtub:        mf.bathtub,
+        washingMachine: mf.washingMachine,
+        date:           mf.date,
+      };
+      fixturesSource = 'metron';
+    }
+
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
-    return res.status(200).json({ ...data, dataStale, staleHours, householdProfile });
+    return res.status(200).json({
+      ...data,
+      fixtures,
+      fixturesSource,
+      dataStale,
+      staleHours,
+      householdProfile,
+    });
   } catch (err) {
     console.error('Data fetch error:', err);
     return res.status(500).json({ error: err.message });

@@ -22,8 +22,17 @@ module.exports = async function handler(req, res) {
     const raw = await redis.get(`waterwise:corrected:${date}`);
     if (!raw) return res.status(404).json({ error: `No corrected data for ${date}` });
 
+    const payload = JSON.parse(raw);
+
+    // Return a clean correctedFixtures summary (strip internal _rawSums debug field)
+    // so the shape matches what /api/data exposes when fixturesSource === "corrected"
+    if (payload.correctedFixtures?._rawSums) {
+      const { _rawSums, ...cleanFixtures } = payload.correctedFixtures;
+      payload.correctedFixtures = cleanFixtures;
+    }
+
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
-    return res.status(200).json(JSON.parse(raw));
+    return res.status(200).json(payload);
   } catch (err) {
     console.error('Corrected fetch error:', err);
     return res.status(500).json({ error: err.message });
