@@ -334,37 +334,79 @@ function confidenceFor(iv) {
 
 // ── grouping ──────────────────────────────────────────────────────────────────
 
-// Group consecutive same-classification intervals into single events.
-// Gap tolerances:
-//   shower  — 5 min (concurrent sink adjustments during a shower don't break the group;
-//             we allow a slightly wider window so interleaved temp-adjust blips are skipped)
-//   default — 3 min
-// Groups by output classification key + corrected flag.
-const GAP_BY_CLS = { shower: 5 * MIN_MS };
 const DEFAULT_GAP = 3 * MIN_MS;
 
+// Phase 1: bucket intervals that share the exact same timestamp.
+// Metron can assign multiple classifications to a single minute (e.g. shower + toilet).
+// Primary = highest-volume interval; the rest are concurrent.
+function bucketByTimestamp(intervals) {
+  const map = new Map();
+  for (const iv of intervals) {
+    if (iv.volume <= 0 || !iv.time) continue;
+    const key = iv.time.getTime();
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(iv);
+  }
+  return [...map.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([ts, ivs]) => {
+      ivs.sort((a, b) => b.volume - a.volume); // primary first
+      return { ts, ivs };
+    });
+}
+
+// Phase 2: group buckets into event groups.
+//
+// Fix 1 — shower lookahead:
+//   When the active group is shower and the current bucket is sink/other,
+//   look ahead up to 2 minutes for the next shower bucket. If found,
+//   absorb the sink/other bucket as a side event and keep the shower group open.
+//   This handles temp-adjustment blips at the sink mid-shower.
+//
+// Fix 2 — concurrent same-minute events:
+//   Multiple intervals in the same bucket (different classifications at the same
+//   minute) are tracked as concurrentIvs. buildEvent exposes concurrent:true and
+//   concurrentWith on the output object.
 function groupIntervals(intervals) {
-  const groups = [];
+  const buckets = bucketByTimestamp(intervals);
+  const groups  = [];
   let cur = null;
 
-  for (const iv of intervals) {
-    if (iv.volume <= 0) continue;
-    const outCls    = clsToOutput(iv.classification);
-    const corrected = !!iv.correctedBy;
-    const maxGap    = GAP_BY_CLS[outCls] ?? DEFAULT_GAP;
+  for (let bi = 0; bi < buckets.length; bi++) {
+    const { ts, ivs } = buckets[bi];
+    const primary   = ivs[0];
+    const outCls    = clsToOutput(primary.classification);
+    const corrected = !!primary.correctedBy;
 
-    if (
-      cur &&
-      cur.outCls    === outCls &&
-      cur.corrected === corrected &&
-      iv.time &&
-      gapMs(cur.last, iv) <= maxGap
-    ) {
-      cur.ivs.push(iv);
-      cur.last = iv;
+    // Fix 1: shower lookahead — absorb intervening sink/other buckets
+    if (cur?.outCls === 'shower' && !corrected &&
+        (outCls === 'sink' || outCls === 'other')) {
+      const nextShowerSoon = buckets.slice(bi + 1).some(b => {
+        if (b.ts - cur.lastTs > 2 * MIN_MS) return false;
+        return clsToOutput(b.ivs[0].classification) === 'shower';
+      });
+      if (nextShowerSoon) {
+        cur.sideIvs.push(...ivs);  // absorbed, not shown as separate event
+        continue;
+      }
+    }
+
+    if (cur && cur.outCls === outCls && cur.corrected === corrected &&
+        ts - cur.lastTs <= DEFAULT_GAP) {
+      // Extend the current group
+      cur.ivs.push(primary);
+      cur.concurrentIvs.push(...ivs.slice(1));
+      cur.lastTs = ts;
     } else {
       if (cur) groups.push(cur);
-      cur = { outCls, corrected, ivs: [iv], last: iv };
+      cur = {
+        outCls,
+        corrected,
+        ivs:           [primary],
+        concurrentIvs: ivs.slice(1),  // Fix 2: same-minute concurrent intervals
+        sideIvs:       [],             // Fix 1: absorbed shower interruptions
+        lastTs:        ts,
+      };
     }
   }
   if (cur) groups.push(cur);
@@ -373,7 +415,6 @@ function groupIntervals(intervals) {
 
 function formatDisplayTime(start, end) {
   if (!end || start === end) return start;
-  // "6:18 AM–6:27 AM" → if same period, compress to "6:18–6:27 AM"
   const sM = start.match(/^(.+) (AM|PM)$/);
   const eM = end.match(/^(.+) (AM|PM)$/);
   if (sM && eM && sM[2] === eM[2]) return `${sM[1]}–${end}`;
@@ -381,12 +422,16 @@ function formatDisplayTime(start, end) {
 }
 
 function buildEvent(grp) {
-  const { ivs, outCls, corrected } = grp;
+  const { ivs, concurrentIvs, sideIvs, outCls, corrected } = grp;
   const first = ivs[0];
   const last  = ivs[ivs.length - 1];
 
-  const gallons   = Math.round(ivs.reduce((s, iv) => s + iv.volume, 0) * 100) / 100;
-  const duration  = (first.time && last.time && ivs.length > 1)
+  // Gallons = all primary + concurrent + absorbed side events
+  const allIvs   = [...ivs, ...concurrentIvs];
+  const gallons  = Math.round(
+    [...allIvs, ...sideIvs].reduce((s, iv) => s + iv.volume, 0) * 100
+  ) / 100;
+  const duration = (first.time && last.time && ivs.length > 1)
     ? Math.round((last.time - first.time) / MIN_MS)
     : 0;
 
@@ -395,19 +440,29 @@ function buildEvent(grp) {
     ? formatTime(last.time) : null;
   const displayTime = formatDisplayTime(timeStart, timeEnd);
 
-  // Most-common original Metron classification label across the group
+  // Most-common Metron raw label from primary intervals
   const rawTally = {};
   for (const iv of ivs) rawTally[iv.metronRaw] = (rawTally[iv.metronRaw] ?? 0) + 1;
   const metronClassification = Object.entries(rawTally).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
-  // Lowest confidence wins (most conservative)
-  const confidence = ivs.reduce((worst, iv) => {
+  // Lowest confidence wins
+  const confidence = allIvs.reduce((worst, iv) => {
     const c = confidenceFor(iv);
     return CONF_RANK[c] < CONF_RANK[worst] ? c : worst;
   }, 'high');
 
-  // First non-null correction rule
-  const correctionRule = ivs.find(iv => iv.correctionRule)?.correctionRule ?? null;
+  const correctionRule = allIvs.find(iv => iv.correctionRule)?.correctionRule ?? null;
+
+  // Fix 2: dominant concurrent classification (highest total volume among concurrent)
+  let concurrentWith = null;
+  if (concurrentIvs.length > 0) {
+    const byKey = {};
+    for (const iv of concurrentIvs) {
+      const k = clsToOutput(iv.classification);
+      byKey[k] = (byKey[k] ?? 0) + iv.volume;
+    }
+    concurrentWith = Object.entries(byKey).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  }
 
   const event = {
     timeStart,
@@ -419,28 +474,33 @@ function buildEvent(grp) {
     corrected,
     confidence,
     correctionRule,
-    intervalCount:         ivs.length,
+    intervalCount:         ivs.length + concurrentIvs.length,
   };
-  if (timeEnd) event.timeEnd = timeEnd;
+  if (timeEnd)       event.timeEnd       = timeEnd;
+  if (concurrentWith) {
+    event.concurrent     = true;
+    event.concurrentWith = concurrentWith;
+  }
   return event;
 }
 
 // ── noise filter ─────────────────────────────────────────────────────────────
 
 function shouldKeep(grp) {
-  const gallons  = grp.ivs.reduce((s, iv) => s + iv.volume, 0);
+  const allIvs  = [...grp.ivs, ...grp.concurrentIvs];
+  const gallons = allIvs.reduce((s, iv) => s + iv.volume, 0);
   const duration = grp.ivs.length > 1 && grp.ivs[0].time && grp.ivs.at(-1).time
     ? Math.round((grp.ivs.at(-1).time - grp.ivs[0].time) / MIN_MS)
     : 0;
 
-  // Rule 1 — drop ALL uncorrected "other" unless sustained unknown use
+  // Drop ALL uncorrected "other" unless it's a sustained unknown
   if (grp.outCls === 'other') {
-    if (grp.corrected) return true;                        // event-log matched
-    if (duration >= 10 && gallons >= 0.5) return true;    // sustained unknown
+    if (grp.corrected) return true;
+    if (duration >= 10 && gallons >= 0.5) return true;
     return false;
   }
 
-  // Rule 2 — drop single-interval sink/toilet artifacts < 0.08G
+  // Drop single-interval sink/toilet meter artifacts < 0.08G
   if (grp.ivs.length === 1 && gallons < 0.08 &&
       (grp.outCls === 'sink' || grp.outCls === 'toilet')) {
     return false;
