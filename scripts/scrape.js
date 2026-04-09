@@ -342,7 +342,10 @@ async function main() {
 
       // Fetch daily interval data using Playwright's request API (shares browser session cookies)
       try {
-        const startLogDate = `${consumptionDate} 12:21:44 AM`;
+        // WaterScope expects M/D/YYYY format, not YYYY-MM-DD
+        const [y, m, d] = consumptionDate.split('-');
+        const mdyDate    = `${parseInt(m, 10)}/${parseInt(d, 10)}/${y}`;
+        const startLogDate = `${mdyDate} 12:21:44 AM`;
         const endLogDate   = startLogDate;
 
         const intervalResp = await page.request.post(
