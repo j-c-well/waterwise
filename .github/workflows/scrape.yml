@@ -2,7 +2,7 @@ name: Scrape WaterScope
 
 on:
   schedule:
-    - cron: '0 13 * * *'  # 6am MT (UTC-7)
+    - cron: '0 8 * * *'   # 2am MT (UTC-6 MDT)
   workflow_dispatch:       # allow manual trigger
 
 jobs:

@@ -2,7 +2,7 @@ name: Watchdog
 
 on:
   schedule:
-    - cron: '0 15 * * *'  # 8am MT (UTC-7), 2 hours after scraper
+    - cron: '0 9 * * *'   # 3am MT (UTC-6 MDT), 1 hour after scraper
   workflow_dispatch:
 
 jobs:
