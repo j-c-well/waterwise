@@ -260,7 +260,46 @@ function applyToiletSplit(intervals) {
   console.log(`Rule 3: toilet split — ${half} half-flush, ${full} full-flush`);
 }
 
-// Rule 4: Bidet seat detection — requires profile.bidetSeat (any truthy value)
+// Rule 4: Sustained high-flow TOILET → SHOWER
+// Mirrors daily-timeline Rule 4: 3+ consecutive TOILET/TOILET_FULL intervals all > 1.0G,
+// spanning > 3 min. Metron misclassifies long showers as Toilet on this meter.
+function applyShowerReclassification(intervals) {
+  const toiletIdxs = intervals
+    .map((iv, i) => ({ iv, i }))
+    .filter(({ iv }) => iv.classification === 'TOILET' || iv.classification === 'TOILET_FULL');
+
+  if (!toiletIdxs.length) return 0;
+
+  const groups = [];
+  let cur = [toiletIdxs[0]];
+  for (let k = 1; k < toiletIdxs.length; k++) {
+    const gap = toiletIdxs[k].iv.time && toiletIdxs[k - 1].iv.time
+      ? toiletIdxs[k].iv.time - toiletIdxs[k - 1].iv.time
+      : Infinity;
+    if (gap <= 3 * MIN) cur.push(toiletIdxs[k]);
+    else { groups.push(cur); cur = [toiletIdxs[k]]; }
+  }
+  groups.push(cur);
+
+  let count = 0;
+  for (const grp of groups) {
+    const allHigh = grp.every(({ iv }) => iv.volume > 1.0);
+    const span = grp.length >= 2 && grp[0].iv.time && grp[grp.length - 1].iv.time
+      ? grp[grp.length - 1].iv.time - grp[0].iv.time
+      : 0;
+    if (grp.length >= 3 && allHigh && span > 3 * MIN) {
+      for (const { i } of grp) {
+        intervals[i] = { ...intervals[i], classification: 'SHOWER', correctedBy: 'rule4' };
+        count++;
+      }
+    }
+  }
+  console.log(`Rule 4: reclassified ${count} intervals → SHOWER`);
+  return count;
+}
+
+// Rule 5: Bidet seat detection — requires profile.bidetSeat (any truthy value)
+// Runs after shower reclassification so converted shower intervals don't trigger bidet pairing.
 // Three sub-patterns:
 //   a) Small OTHER 0–3 min BEFORE a full flush → BIDET_WASH
 //   b) Small OTHER/SINK 1–4 min AFTER a full flush → BIDET_REFILL
@@ -284,7 +323,7 @@ function applyBidetDetection(intervals, profile) {
       if (diffMin < 0 || diffMin > 3) continue;
       if (pre.classification !== 'OTHER' && pre.classification !== 'UNKNOWN') continue;
       if (pre.volume < 0.05 || pre.volume > 0.20) continue;
-      intervals[j] = { ...pre, classification: 'BIDET_WASH', correctedBy: 'rule4', correctionRule: 'bidet-pre-flush' };
+      intervals[j] = { ...pre, classification: 'BIDET_WASH', correctedBy: 'rule5', correctionRule: 'bidet-pre-flush' };
       count++;
     }
 
@@ -298,7 +337,7 @@ function applyBidetDetection(intervals, profile) {
       const cls = post.classification;
       if (cls !== 'OTHER' && cls !== 'UNKNOWN' && cls !== 'SINK') continue;
       if (post.volume < 0.05 || post.volume > 0.25) continue;
-      intervals[j] = { ...post, classification: 'BIDET_REFILL', correctedBy: 'rule4', correctionRule: 'bidet-post-flush' };
+      intervals[j] = { ...post, classification: 'BIDET_REFILL', correctedBy: 'rule5', correctionRule: 'bidet-post-flush' };
       count++;
     }
   }
@@ -320,7 +359,7 @@ function applyBidetDetection(intervals, profile) {
     });
     if (!isolated) continue;
 
-    intervals[i] = { ...iv, classification: 'BIDET_SELFCLEAN', correctedBy: 'rule4', correctionRule: 'bidet-selfclean' };
+    intervals[i] = { ...iv, classification: 'BIDET_SELFCLEAN', correctedBy: 'rule5', correctionRule: 'bidet-selfclean' };
     count++;
   }
 
@@ -444,6 +483,7 @@ async function main() {
     applyDishwasherDetection(intervals, profile);
     applyEventLogMatching(intervals, eventLog, profile);
     applyToiletSplit(intervals);
+    applyShowerReclassification(intervals);
     applyBidetDetection(intervals, profile);
 
     const after = {};
