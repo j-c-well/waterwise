@@ -1,0 +1,25 @@
+name: Backfill Intervals
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: npm install
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run backfill
+        env:
+          WATERSCOPE_EMAIL:    ${{ secrets.WATERSCOPE_EMAIL }}
+          WATERSCOPE_PASSWORD: ${{ secrets.WATERSCOPE_PASSWORD }}
+          REDIS_URL:           ${{ secrets.REDIS_URL }}
+        run: node scripts/backfill-intervals.js
