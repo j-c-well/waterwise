@@ -87,6 +87,20 @@ async function main() {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
 
+    // Intercept the real ConsumptionHistoryDataClaculation request that the
+    // dashboard fires on load — capture its headers + body so we can reuse
+    // the exact format (content-type, CSRF token, field names) for manual calls.
+    const capturedReq = { headers: null, body: null, contentType: null };
+    page.on('request', request => {
+      if (!request.url().includes('ConsumptionHistoryDataClaculation')) return;
+      if (request.method() !== 'POST') return;
+      capturedReq.headers     = request.headers();
+      capturedReq.body        = request.postData() ?? '';
+      capturedReq.contentType = (request.headers()['content-type'] ?? '').split(';')[0].trim();
+      console.log('Intercepted dashboard request — content-type:', capturedReq.contentType);
+      console.log('Request body sample:', capturedReq.body.slice(0, 200));
+    });
+
     // ── login (same flow as scrape.js) ────────────────────────────────────────
     console.log('Logging in to WaterScope...');
     await page.goto('https://waterscope.us/Home/Main', { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -102,36 +116,67 @@ async function main() {
       page.click('#next'),
     ]);
     await page.waitForSelector('#meterpanetopheaderbar', { timeout: 60000 });
-    await page.waitForTimeout(2000); // let session cookies settle
+    await page.waitForTimeout(3000); // let XHR fire and be intercepted
 
     const origin   = new URL(page.url()).origin;
     const ENDPOINT = `${origin}/Consumer/Consumption/ConsumptionHistoryDataClaculation`;
     console.log('Authenticated. Endpoint:', ENDPOINT);
 
+    if (!capturedReq.body) {
+      console.warn('Dashboard XHR did not fire during login wait — will try JSON POST anyway');
+    }
+
     // ── fetch each missing date ───────────────────────────────────────────────
     for (const date of todo) {
       console.log(`\n── ${date} ──`);
 
-      // Build request args in Node (toMetronDate can't be called inside evaluate sandbox)
-      const evalArgs = {
-        url:  ENDPOINT,
-        body: {
-          startLogDate: toMetronDate(date, '12:00:00 AM'),
-          endLogDate:   toMetronDate(date, '11:59:59 PM'),
-          AccountId:    ACCOUNT_ID,
-          MeterId:      METER_ID,
-        },
-      };
+      // Build the request body, matching the format the dashboard actually used.
+      // If we captured a form-encoded body, patch its date fields; otherwise fall
+      // back to form-encoded without CSRF (may work if endpoint allows it).
+      const startDate = toMetronDate(date, '12:00:00 AM');
+      const endDate   = toMetronDate(date, '11:59:59 PM');
+
+      let requestBody;
+      let contentType;
+      if (capturedReq.body && capturedReq.contentType === 'application/x-www-form-urlencoded') {
+        // Patch the captured form body with the new dates, keep all other fields intact
+        const params = new URLSearchParams(capturedReq.body);
+        params.set('startLogDate', startDate);
+        params.set('endLogDate',   endDate);
+        requestBody = params.toString();
+        contentType = 'application/x-www-form-urlencoded';
+        console.log(`  using form-encoded (patched from dashboard request)`);
+      } else if (capturedReq.body && capturedReq.contentType === 'application/json') {
+        const orig = JSON.parse(capturedReq.body);
+        orig.startLogDate = startDate;
+        orig.endLogDate   = endDate;
+        requestBody = JSON.stringify(orig);
+        contentType = 'application/json';
+        console.log(`  using JSON (patched from dashboard request)`);
+      } else {
+        // Fallback: try form-encoded without CSRF token
+        const params = new URLSearchParams({
+          startLogDate: startDate,
+          endLogDate:   endDate,
+          AccountId:    String(ACCOUNT_ID),
+          MeterId:      String(METER_ID),
+        });
+        requestBody = params.toString();
+        contentType = 'application/x-www-form-urlencoded';
+        console.log(`  using form-encoded fallback (no captured request)`);
+      }
+
+      const evalArgs = { url: ENDPOINT, body: requestBody, contentType };
 
       let result;
       try {
         result = await page.evaluate(
-          async ({ url, body }) => {
-            const res  = await fetch(url, {
+          async ({ url, body, contentType }) => {
+            const res = await fetch(url, {
               method:      'POST',
-              headers:     { 'Content-Type': 'application/json' },
+              headers:     { 'Content-Type': contentType },
               credentials: 'include',
-              body:        JSON.stringify(body),
+              body,
             });
             const text = await res.text();
             return { status: res.status, text };
