@@ -345,6 +345,59 @@ function applyRule5(intervals, profile) {
   return count;
 }
 
+// Rule 6: High-flow long-duration SHOWER → BATH
+// Triggers when: span ≥ 10 min, total ≥ 20G, avg flow ≥ 2.0 GPM,
+// and no BIDET_WASH/REFILL within 3 min of either end.
+function applyRule6(intervals) {
+  const showerIdxs = intervals
+    .map((iv, i) => ({ iv, i }))
+    .filter(({ iv }) => iv.classification === 'SHOWER');
+
+  if (!showerIdxs.length) return 0;
+
+  const groups = [];
+  let cur = [showerIdxs[0]];
+  for (let k = 1; k < showerIdxs.length; k++) {
+    if (gapMs(showerIdxs[k - 1].iv, showerIdxs[k].iv) <= 3 * MIN_MS) {
+      cur.push(showerIdxs[k]);
+    } else {
+      groups.push(cur); cur = [showerIdxs[k]];
+    }
+  }
+  groups.push(cur);
+
+  let count = 0;
+  for (const grp of groups) {
+    const first = grp[0].iv;
+    const last  = grp[grp.length - 1].iv;
+    if (!first.time || !last.time) continue;
+
+    const spanMin  = (last.time - first.time) / MIN_MS;
+    const totalGal = grp.reduce((s, c) => s + c.iv.volume, 0);
+    const avgFlow  = spanMin > 0 ? totalGal / spanMin : totalGal;
+
+    if (spanMin  < 10)  continue;
+    if (totalGal < 20)  continue;
+    if (avgFlow  < 2.0) continue;
+
+    const firstTs = first.time.getTime();
+    const lastTs  = last.time.getTime();
+    const hasBidet = intervals.some(iv => {
+      if (!iv.time) return false;
+      if (iv.classification !== 'BIDET_WASH' && iv.classification !== 'BIDET_REFILL') return false;
+      const ts = iv.time.getTime();
+      return Math.abs(ts - firstTs) <= 3 * MIN_MS || Math.abs(ts - lastTs) <= 3 * MIN_MS;
+    });
+    if (hasBidet) continue;
+
+    for (const { i } of grp) {
+      intervals[i] = { ...intervals[i], classification: 'BATH', correctedBy: 'rule6', correctionRule: 'high-flow-long-duration' };
+      count++;
+    }
+  }
+  return count;
+}
+
 // Rule 4: sustained "Toilet" > 3 consecutive intervals at > 1.0G → shower
 // (handles Metron misclassifying long showers as toilet)
 function applyRule4(intervals) {
@@ -400,10 +453,11 @@ const CLS_TO_KEY = {
   BIDET_WASH:      'bidet',
   BIDET_REFILL:    'bidet',
   BIDET_SELFCLEAN: 'bidet',
+  BATH:            'bath',
 };
 
 function buildSummary(intervals) {
-  const totals = { toilet: 0, shower: 0, sink: 0, dishwasher: 0, washingMachine: 0, bidet: 0, other: 0 };
+  const totals = { toilet: 0, shower: 0, bath: 0, sink: 0, dishwasher: 0, washingMachine: 0, bidet: 0, other: 0 };
   const toiletHalf  = { count: 0, total: 0 };
   const toiletFull  = { count: 0, total: 0 };
   const bidetSub    = { wash: 0, refill: 0, selfClean: 0 };
@@ -424,6 +478,7 @@ function buildSummary(intervals) {
   return {
     toilet:         { total: r(totals.toilet), halfFlush: toiletHalf.count, fullFlush: toiletFull.count },
     shower:         { total: r(totals.shower) },
+    bath:           { total: r(totals.bath) },
     sink:           { total: r(totals.sink) },
     dishwasher:     { total: r(totals.dishwasher) },
     washingMachine: { total: r(totals.washingMachine) },
@@ -441,6 +496,7 @@ function clsToOutput(cls) {
     WASHING_MACHINE: 'washingMachine', CLOTHES_WASHER: 'washingMachine', CLOTHESWASHER: 'washingMachine',
     OTHER: 'other', UNKNOWN: 'other', OUTDOOR: 'other', IRRIGATION: 'other', LEAK: 'other',
     BIDET_WASH: 'bidet', BIDET_REFILL: 'bidet', BIDET_SELFCLEAN: 'bidet',
+    BATH: 'bath',
   };
   return map[cls] ?? 'other';
 }
@@ -677,6 +733,7 @@ module.exports = async function handler(req, res) {
     applyRule3(intervals, profile);   // split only — doesn't add to count
     corrections += applyRule4(intervals);
     corrections += applyRule5(intervals, profile);
+    corrections += applyRule6(intervals);
 
     // Summary runs on ALL corrected intervals before noise filtering
     const summary = buildSummary(intervals);

@@ -363,7 +363,65 @@ function applyBidetDetection(intervals, profile) {
     count++;
   }
 
-  console.log(`Rule 4: bidet — ${count} intervals reclassified (BIDET_WASH/REFILL/SELFCLEAN)`);
+  console.log(`Rule 5: bidet — ${count} intervals reclassified (BIDET_WASH/REFILL/SELFCLEAN)`);
+  return count;
+}
+
+// Rule 6: High-flow long-duration SHOWER → BATH
+// Triggers when: span ≥ 10 min, total ≥ 20G, avg flow ≥ 2.0 GPM,
+// and no BIDET_WASH/REFILL within 3 min of either end (bidet flanks a flush, not a fill).
+function applyBathDetection(intervals) {
+  const showerIdxs = intervals
+    .map((iv, i) => ({ iv, i }))
+    .filter(({ iv }) => iv.classification === 'SHOWER');
+
+  if (!showerIdxs.length) return 0;
+
+  // Group consecutive SHOWER intervals (gap ≤ 3 min)
+  const groups = [];
+  let cur = [showerIdxs[0]];
+  for (let k = 1; k < showerIdxs.length; k++) {
+    const a = showerIdxs[k - 1].iv.time;
+    const b = showerIdxs[k].iv.time;
+    const gap = (a && b) ? b - a : Infinity;
+    if (gap <= 3 * MIN) cur.push(showerIdxs[k]);
+    else { groups.push(cur); cur = [showerIdxs[k]]; }
+  }
+  groups.push(cur);
+
+  let count = 0;
+  for (const grp of groups) {
+    const first = grp[0].iv;
+    const last  = grp[grp.length - 1].iv;
+    if (!first.time || !last.time) continue;
+
+    const spanMin  = (last.time - first.time) / MIN;
+    const totalGal = grp.reduce((s, c) => s + c.iv.volume, 0);
+    const avgFlow  = spanMin > 0 ? totalGal / spanMin : totalGal;
+
+    if (spanMin  < 10)  continue;
+    if (totalGal < 20)  continue;
+    if (avgFlow  < 2.0) continue;
+
+    // Reject if a bidet event flanks this group within 3 min
+    const firstTs = first.time.getTime();
+    const lastTs  = last.time.getTime();
+    const hasBidet = intervals.some(iv => {
+      if (!iv.time) return false;
+      if (iv.classification !== 'BIDET_WASH' && iv.classification !== 'BIDET_REFILL') return false;
+      const ts = iv.time.getTime();
+      return Math.abs(ts - firstTs) <= 3 * MIN || Math.abs(ts - lastTs) <= 3 * MIN;
+    });
+    if (hasBidet) continue;
+
+    for (const { i } of grp) {
+      intervals[i] = { ...intervals[i], classification: 'BATH', correctedBy: 'rule6', correctionRule: 'high-flow-long-duration' };
+      count++;
+    }
+    console.log(`Rule 6: bath detected — ${grp.length} intervals, ${Math.round(totalGal * 10) / 10}G over ${Math.round(spanMin)} min (${Math.round(avgFlow * 10) / 10} GPM)`);
+  }
+
+  if (!count) console.log('Rule 6: no bath events detected');
   return count;
 }
 
@@ -398,6 +456,8 @@ function buildCorrectedFixtures(intervals) {
 
   const dishwasher = round(sum['DISHWASHER'] ?? 0);
 
+  const bath = round(sum['BATH'] ?? 0);
+
   const bidetWash      = round(sum['BIDET_WASH']      ?? 0);
   const bidetRefill    = round(sum['BIDET_REFILL']    ?? 0);
   const bidetSelfClean = round(sum['BIDET_SELFCLEAN'] ?? 0);
@@ -413,6 +473,7 @@ function buildCorrectedFixtures(intervals) {
     sink,
     dishwasher,
     shower,
+    bath,
     washingMachine,
     bidet:         { wash: bidetWash, refill: bidetRefill, selfClean: bidetSelfClean, total: bidetTotal },
     other,
@@ -485,6 +546,7 @@ async function main() {
     applyToiletSplit(intervals);
     applyShowerReclassification(intervals);
     applyBidetDetection(intervals, profile);
+    applyBathDetection(intervals);
 
     const after = {};
     for (const iv of intervals) after[iv.classification] = (after[iv.classification] ?? 0) + 1;
