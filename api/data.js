@@ -37,6 +37,7 @@ module.exports = async function handler(req, res) {
     // Metron labels the dishwasher as "Kitchen" — rename it here regardless of source.
     let fixtures;
     let fixturesSource;
+    let leakAlert = null;
 
     if (corrected?.correctedFixtures) {
       const cf = corrected.correctedFixtures;
@@ -52,6 +53,12 @@ module.exports = async function handler(req, res) {
         date:           data.fixtures?.date ?? data.consumptionDate,
       };
       fixturesSource = 'corrected';
+
+      // Leak alert: only flag if LEAK gallons remain after bath reclassification
+      const residualLeak = corrected.correctedFixtures._rawSums?.LEAK ?? 0;
+      leakAlert = residualLeak > 5
+        ? { gallons: Math.round(residualLeak * 10) / 10, detected: true }
+        : null;
     } else {
       const mf = data.fixtures ?? {};
       fixtures = {
@@ -74,6 +81,7 @@ module.exports = async function handler(req, res) {
       dataStale,
       staleHours,
       householdProfile,
+      leakAlert,
     });
   } catch (err) {
     console.error('Data fetch error:', err);
