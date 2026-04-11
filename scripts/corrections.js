@@ -230,6 +230,8 @@ function applyEventLogMatching(intervals, eventLog, profile) {
       if (!iv.time) continue;
       const ivTodMin = iv.time.getUTCHours() * 60 + iv.time.getUTCMinutes();
       if (ivTodMin >= winStart && ivTodMin <= winEnd) {
+        // Only reclassify unconfidently-classified intervals — don't override SHOWER, TOILET, etc.
+        if (iv.classification !== 'OTHER' && iv.classification !== 'SINK') continue;
         intervals[i] = { ...intervals[i], classification: 'DISHWASHER', correctedBy: 'rule2' };
         count++;
       }
@@ -371,21 +373,26 @@ function applyBidetDetection(intervals, profile) {
 // Triggers when: span ≥ 10 min, total ≥ 20G, avg flow ≥ 2.0 GPM,
 // and no BIDET_WASH/REFILL within 3 min of either end (bidet flanks a flush, not a fill).
 function applyBathDetection(intervals) {
-  const showerIdxs = intervals
+  // Include LEAK alongside SHOWER: Metron sometimes splits a single bath fill
+  // across SHOWER + LEAK buckets, so both must be considered as one contiguous event.
+  // Only include high-flow LEAK intervals (≥ 0.5G/min) — intermittent leaks run
+  // ~0.03G/min and must not be grouped with bath candidates.
+  const candidateIdxs = intervals
     .map((iv, i) => ({ iv, i }))
-    .filter(({ iv }) => iv.classification === 'SHOWER');
+    .filter(({ iv }) => iv.classification === 'SHOWER' ||
+                        (iv.classification === 'LEAK' && iv.volume >= 0.5));
 
-  if (!showerIdxs.length) return 0;
+  if (!candidateIdxs.length) return 0;
 
-  // Group consecutive SHOWER intervals (gap ≤ 3 min)
+  // Group consecutive SHOWER/LEAK intervals (gap ≤ 3 min)
   const groups = [];
-  let cur = [showerIdxs[0]];
-  for (let k = 1; k < showerIdxs.length; k++) {
-    const a = showerIdxs[k - 1].iv.time;
-    const b = showerIdxs[k].iv.time;
+  let cur = [candidateIdxs[0]];
+  for (let k = 1; k < candidateIdxs.length; k++) {
+    const a = candidateIdxs[k - 1].iv.time;
+    const b = candidateIdxs[k].iv.time;
     const gap = (a && b) ? b - a : Infinity;
-    if (gap <= 3 * MIN) cur.push(showerIdxs[k]);
-    else { groups.push(cur); cur = [showerIdxs[k]]; }
+    if (gap <= 3 * MIN) cur.push(candidateIdxs[k]);
+    else { groups.push(cur); cur = [candidateIdxs[k]]; }
   }
   groups.push(cur);
 
@@ -401,7 +408,7 @@ function applyBathDetection(intervals) {
 
     if (spanMin  < 10)  continue;
     if (totalGal < 20)  continue;
-    if (avgFlow  < 2.0) continue;
+    if (avgFlow  < 1.8) continue;
 
     // Reject if a bidet event flanks this group within 3 min
     const firstTs = first.time.getTime();
