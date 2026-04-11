@@ -44,6 +44,7 @@ module.exports = async function handler(req, res) {
         toilet:         cf.toilet,          // { halfFlush, fullFlush, total }
         sink:           cf.sink,
         shower:         cf.shower,
+        bath:           cf.bath,            // tub fills reclassified from shower
         dishwasher:     cf.dishwasher,      // corrected engine already uses "dishwasher"
         washingMachine: cf.washingMachine,
         bidet:          cf.bidet,           // { wash, refill, selfClean, total } — present if bidetSeat in profile
