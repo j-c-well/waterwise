@@ -1,5 +1,7 @@
 const { chromium } = require('playwright');
 const https = require('https');
+const path  = require('path');
+const { spawn } = require('child_process');
 
 const SNOTEL_URL = 'https://wcc.sc.egov.usda.gov/reportGenerator/view_csv/customSingleStationReport/daily/936:CO:SNTL%7Cid=%22%22%7Cname/-2,0/WTEQ::value,WTEQ::median_1991,PREC::value,PREC::median_1991';
 
@@ -87,6 +89,242 @@ function parseNumber(str) {
   if (str == null) return null;
   const n = parseFloat(String(str).replace(/[^0-9.]/g, ''));
   return isNaN(n) ? null : n;
+}
+
+// ── Multi-user helpers ────────────────────────────────────────────────────────
+
+function runCorrectionsForUser(date, userId) {
+  return new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [path.join(__dirname, 'corrections.js'), date, '--userId', userId],
+      { env: process.env, stdio: 'pipe' }
+    );
+    const lines = [];
+    child.stdout.on('data', d => lines.push(...d.toString().split('\n').filter(Boolean)));
+    child.stderr.on('data', d => lines.push(...d.toString().split('\n').filter(Boolean)));
+    child.on('close', code => resolve({ code, lines }));
+  });
+}
+
+async function scrapeUser({ email, password, userId, redis, now, snowFields, consumptionDate }) {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+
+    const capturedIntervals = { data: null, url: null };
+    page.on('response', async (response) => {
+      const url = response.url();
+      if (!url.includes('waterscope.us')) return;
+      const type = response.request().resourceType();
+      if (type !== 'xhr' && type !== 'fetch') return;
+      if (/Consumption|Interval|History|Usage/i.test(url)) {
+        try {
+          const text = await response.text();
+          const json = JSON.parse(text);
+          if (Array.isArray(json) && json.length > 0) {
+            capturedIntervals.data = json;
+            capturedIntervals.url  = url;
+          } else if (json && typeof json === 'object') {
+            capturedIntervals.data = json;
+            capturedIntervals.url  = url;
+          }
+        } catch (_) { /* not JSON */ }
+      }
+    });
+
+    await page.goto('https://waterscope.us/Home/Main', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.fill('#txtSearchUserName', email);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 }),
+      page.click('#searchUserName'),
+    ]);
+    await page.waitForSelector('#password', { timeout: 60000 });
+    await page.fill('#password', password);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 }),
+      page.click('#next'),
+    ]);
+
+    await page.waitForSelector('#meterpanetopheaderbar', { timeout: 60000 });
+    const currentUrl = page.url();
+    if (!currentUrl.includes('/Consumer/')) {
+      throw new Error('Login failed — not on dashboard: ' + currentUrl);
+    }
+
+    await page.waitForFunction(() => {
+      const body = document.body.innerText;
+      return body.includes('So far this cycle') && /[\d,]+\.?\d*\s*G/.test(body);
+    }, { timeout: 60000 });
+    await page.waitForTimeout(3000);
+
+    const raw = await page.evaluate(() => {
+      const bar = document.querySelector('#meterpanetopheaderbar');
+      if (!bar) return null;
+      const barText  = bar.innerText;
+      const bodyText = document.body.innerText;
+      const result   = {};
+      const lcdMatch     = barText.match(/LCD Read[:\s]+([^\n]+)/i);
+      const budgetMatch  = barText.match(/Water Budget[:\s]+([^\n]+)/i);
+      const billingMatch = barText.match(/Billing Read[:\s]+([\d,]+\.?\d*)/i);
+      if (lcdMatch)     result.lcdRead          = lcdMatch[1].trim();
+      if (budgetMatch)  result.waterBudgetStatus = budgetMatch[1].trim();
+      if (billingMatch) result.billingRead       = parseFloat(billingMatch[1].replace(/,/g, ''));
+      const cycleMatch = bodyText.match(/So far this cycle[\s\S]*?([\d,]+\.?\d*)\s*G/i);
+      const dailyMatch = bodyText.match(/Daily Average[\s\S]*?([\d,]+\.?\d*)\s*G/i);
+      result.soFarThisCycle = cycleMatch ? parseFloat(cycleMatch[1].replace(/,/g, '')) : 0;
+      result.dailyAverage   = dailyMatch ? parseFloat(dailyMatch[1].replace(/,/g, '')) : 0;
+      const irrMatch = bodyText.match(/Irrigation Analysis[\s\S]*?([\d,]+\.?\d*)\s*G/i);
+      const irrVal   = irrMatch ? parseFloat(irrMatch[1].replace(/,/g, '')) : 0;
+      result.irrigationGallons = irrVal > 10000 ? 0 : irrVal;
+      result.rawText = bodyText;
+      return result;
+    });
+
+    if (!raw) throw new Error('Could not scrape dashboard');
+
+    const bodyText = await page.evaluate(() => document.body.innerText);
+    raw.rawText = bodyText;
+
+    const resStart = bodyText.indexOf('Residential Analysis');
+    const resEnd   = bodyText.indexOf('Meter Information', resStart);
+    const resText  = resStart === -1 ? '' : (resEnd === -1 ? bodyText.slice(resStart) : bodyText.slice(resStart, resEnd));
+    const resLines = resText.split('\n').map(l => l.trim()).filter(Boolean);
+    function getFixtureValue(lines, label) {
+      const idx = lines.findIndex(l => l.toLowerCase().includes(label.toLowerCase()));
+      if (idx < 1) return 0;
+      for (let i = idx - 1; i >= 0; i--) {
+        const match = lines[i].match(/^([\d.]+)\s*G?$/);
+        if (match) return Math.round(parseFloat(match[1]));
+      }
+      return 0;
+    }
+    raw.fixtures = {
+      toilet:         getFixtureValue(resLines, 'Toilet'),
+      sink:           getFixtureValue(resLines, 'Sink'),
+      shower:         getFixtureValue(resLines, 'Shower'),
+      kitchen:        getFixtureValue(resLines, 'Kitchen'),
+      bathtub:        getFixtureValue(resLines, 'Bath Tub'),
+      washingMachine: getFixtureValue(resLines, 'Washing Machine'),
+      date:           consumptionDate,
+    };
+
+    const billingCycleDay = now.getDate();
+    const daysInMonth     = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const daysRemaining   = daysInMonth - billingCycleDay;
+    const droughtLevel    = 1;
+    const dailyAverage    = raw.dailyAverage   ?? 0;
+    const soFarThisCycle  = raw.soFarThisCycle ?? 0;
+    const projectedTotal  = Math.round(dailyAverage * daysInMonth);
+    const currentTier     = getTier(soFarThisCycle);
+    const nextThreshold   = TIER_THRESHOLDS[currentTier] ?? Infinity;
+    const galsTilNextTier = currentTier < 5 ? Math.round(nextThreshold - soFarThisCycle) : 0;
+    const daysUntilTierCross = dailyAverage > 0 && currentTier < 5
+      ? Math.round((galsTilNextTier / dailyAverage) * 10) / 10 : null;
+    const projectedTier  = getTier(projectedTotal);
+    const { total: costSoFar,    costByTier } = calcCost(soFarThisCycle, droughtLevel);
+    const { total: projectedCost             } = calcCost(projectedTotal, droughtLevel);
+    let nudge = 'none';
+    if (currentTier >= 3)           nudge = 'in_tier_3plus';
+    else if (currentTier === 2)     nudge = 'in_tier_2';
+    else if (galsTilNextTier < 500) nudge = 'approaching';
+
+    const payload = {
+      lcdRead:            raw.lcdRead ?? null,
+      soFarThisCycle,
+      dailyAverage,
+      waterBudgetStatus:  raw.waterBudgetStatus ?? null,
+      billingRead:        raw.billingRead ?? null,
+      irrigationGallons:  raw.irrigationGallons,
+      scrapedAt:          now.toISOString(),
+      billingCycleDay, daysInMonth, daysRemaining, projectedTotal, droughtLevel,
+      currentTier, galsTilNextTier, daysUntilTierCross, projectedTier,
+      costSoFar, projectedCost, costByTier, nudge,
+      hasIrrigation:       raw.irrigationGallons > 0,
+      fixtures:            raw.fixtures,
+      consumptionDate,
+      ...snowFields,
+    };
+
+    // Save interval data
+    if (capturedIntervals.data) {
+      const intervalKey = `waterwise:${userId}:intervals:${consumptionDate}`;
+      await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 7776000);
+      console.log(`  Intervals saved → ${intervalKey}`);
+    }
+
+    // Save latest + dated snapshot
+    await Promise.all([
+      redis.set(`waterwise:${userId}:latest`, JSON.stringify(payload)),
+      redis.set(`waterwise:${userId}:${consumptionDate}`, JSON.stringify(payload), 'EX', 7776000),
+    ]);
+
+    // Run corrections
+    if (capturedIntervals.data) {
+      const { code, lines } = await runCorrectionsForUser(consumptionDate, userId);
+      const summary = lines.find(l => /Rule 6|correctedFixtures|complete/.test(l)) ?? '';
+      if (code !== 0) console.error(`  Corrections failed (exit ${code}):`, lines.slice(-3).join(' | '));
+      else console.log(`  Corrections OK — ${summary}`);
+    }
+
+    console.log(`✓ Scraped ${userId} (${email}): ${soFarThisCycle}G so far this cycle`);
+    return true;
+  } catch (err) {
+    console.error(`✗ Failed ${userId} (${email}): ${err.message}`);
+    return false;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+async function scrapeAllUsers(redis, now, snowFields, consumptionDate) {
+  let keys;
+  try {
+    keys = await redis.keys('waterwise:creds:*');
+  } catch (err) {
+    console.error('Multi-user: could not list creds keys:', err.message);
+    return;
+  }
+
+  if (!keys.length) {
+    console.log('Multi-user: no registered users found');
+    return;
+  }
+
+  const { decrypt } = require('../lib/crypto');
+  let succeeded = 0;
+
+  for (const key of keys) {
+    const credsRaw = await redis.get(key);
+    if (!credsRaw) continue;
+    let creds;
+    try { creds = JSON.parse(credsRaw); } catch { continue; }
+
+    // Skip the owner placeholder (scraped separately above)
+    if (!creds.userId || creds.userId === 'owner') continue;
+
+    let password;
+    try {
+      password = decrypt(creds.encryptedPassword, creds.iv, creds.authTag);
+    } catch (err) {
+      console.error(`Multi-user: could not decrypt password for ${creds.userId}:`, err.message);
+      continue;
+    }
+
+    const ok = await scrapeUser({
+      email:           creds.email,
+      password,
+      userId:          creds.userId,
+      redis,
+      now,
+      snowFields,
+      consumptionDate,
+    });
+    if (ok) succeeded++;
+  }
+
+  console.log(`Multi-user scrape complete: ${succeeded}/${keys.length} succeeded`);
 }
 
 async function main() {
@@ -392,7 +630,6 @@ async function main() {
         redis.set('waterwise:latest', JSON.stringify(payload)),
         redis.set(dateKey, JSON.stringify(payload), 'EX', 7776000),
       ]);
-      await redis.quit();
 
       console.log('SUCCESS: Redis updated', dateKey, 'soFarThisCycle:', payload.soFarThisCycle);
       console.log(JSON.stringify(payload, null, 2));
@@ -403,6 +640,11 @@ async function main() {
       } catch (e) {
         console.error('Alert email failed:', e.message);
       }
+
+      // ── Multi-user scrape ──────────────────────────────────────────────────
+      await scrapeAllUsers(redis, now, snowFields, consumptionDate);
+
+      await redis.quit();
     } else {
       // No Redis — just log for local debugging
       const payload = {

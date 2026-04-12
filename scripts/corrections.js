@@ -494,10 +494,16 @@ function buildCorrectedFixtures(intervals) {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const redisUrl    = process.env.REDIS_URL;
-  const targetDate  = process.argv[2] ?? yesterdayDate();
+  const redisUrl   = process.env.REDIS_URL;
+  const args       = process.argv.slice(2);
+  const userIdFlag = args.indexOf('--userId');
+  const userId     = userIdFlag !== -1 ? args[userIdFlag + 1] : null;
+  const targetDate = args.find(a => /^\d{4}-\d{2}-\d{2}$/.test(a)) ?? yesterdayDate();
 
-  console.log('corrections.js starting for date:', targetDate);
+  // Key prefix: 'waterwise:{userId}:' for registered users, 'waterwise:' for owner
+  const ns = userId ? `waterwise:${userId}` : 'waterwise';
+
+  console.log('corrections.js starting for date:', targetDate, userId ? `(userId: ${userId})` : '(owner)');
 
   if (!redisUrl) {
     throw new Error('REDIS_URL env var not set');
@@ -508,10 +514,10 @@ async function main() {
   try {
     // ── read inputs ──
     const [intervalsRaw, profileRaw, eventLogRaw, latestRaw] = await Promise.all([
-      redis.get(`waterwise:intervals:${targetDate}`),
-      redis.get('waterwise:household:owner'),
-      redis.get('waterwise:event-log:owner'),
-      redis.get('waterwise:latest'),
+      redis.get(`${ns}:intervals:${targetDate}`),
+      redis.get(`${ns === 'waterwise' ? 'waterwise:household:owner' : `waterwise:household:${userId}`}`),
+      redis.get(`${ns === 'waterwise' ? 'waterwise:event-log:owner' : `waterwise:event-log:${userId}`}`),
+      redis.get(`${ns}:latest`),
     ]);
 
     if (!intervalsRaw) {
@@ -577,15 +583,16 @@ async function main() {
     };
 
     // ── save to Redis ──
-    const correctedKey = `waterwise:corrected:${targetDate}`;
+    const correctedKey = `${ns}:corrected:${targetDate}`;
     await redis.set(correctedKey, JSON.stringify(correctedPayload), 'EX', 7776000); // 90 days
     console.log('Saved', correctedKey);
 
-    // Patch waterwise:latest if it matches this date
+    // Patch :latest if it matches this date
     if (latest && latest.consumptionDate === targetDate) {
+      const latestKey = `${ns}:latest`;
       const patched = { ...latest, correctedFixtures };
-      await redis.set('waterwise:latest', JSON.stringify(patched));
-      console.log('Patched waterwise:latest with correctedFixtures');
+      await redis.set(latestKey, JSON.stringify(patched));
+      console.log(`Patched ${latestKey} with correctedFixtures`);
     }
 
     console.log('corrections.js complete');
