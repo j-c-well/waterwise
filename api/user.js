@@ -24,7 +24,11 @@ async function handleRegister(req, res) {
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { email, password, name } = req.body ?? {};
+  const { email, password, name, inviteCode } = req.body ?? {};
+
+  if (!inviteCode || inviteCode !== process.env.INVITE_CODE) {
+    return res.status(403).json({ error: 'Invalid invite code' });
+  }
 
   if (!email || typeof email !== 'string' || !email.includes('@')) {
     return res.status(400).json({ error: 'Valid email required' });
