@@ -12,19 +12,22 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const { userId } = req.query ?? {};
+  const ns = userId ? `waterwise:${userId}` : 'waterwise';
+
   try {
     // Build the last 30 date keys
     const keys = [];
     for (let i = 0; i < 30; i++) {
       const d = new Date();
       d.setDate(d.getDate() - i);
-      keys.push(`waterwise:${d.toISOString().slice(0, 10)}`);
+      keys.push(`${ns}:${d.toISOString().slice(0, 10)}`);
     }
 
     const values = await redis.mget(...keys);
 
     const history = values
-      .map((v, i) => v ? { date: keys[i].replace('waterwise:', ''), ...JSON.parse(v) } : null)
+      .map((v, i) => v ? { date: keys[i].replace(`${ns}:`, ''), ...JSON.parse(v) } : null)
       .filter(Boolean)
       .sort((a, b) => a.date.localeCompare(b.date));
 
