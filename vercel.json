@@ -27,6 +27,7 @@
     { "source": "/api/household/shower-autoassign",  "destination": "/api/household/shower-autoassign.js" },
     { "source": "/api/user/register",                "destination": "/api/user.js" },
     { "source": "/api/user/data",                    "destination": "/api/user.js" },
-    { "source": "/api/user/status",                  "destination": "/api/user.js" }
+    { "source": "/api/user/status",                  "destination": "/api/user.js" },
+    { "source": "/api/user/admin",                   "destination": "/api/user.js" }
   ]
 }
