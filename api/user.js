@@ -215,10 +215,8 @@ async function handleAdmin(req, res) {
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
   const { key } = req.query ?? {};
-  console.log('ADMIN_KEY env:', JSON.stringify(process.env.ADMIN_KEY));
-  console.log('key param:', JSON.stringify(key));
-  console.log('match:', key === process.env.ADMIN_KEY);
-  if (!key || key !== process.env.ADMIN_KEY) {
+  const adminKey = (process.env.ADMIN_KEY || '').trim();
+  if (!key || key !== adminKey) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
