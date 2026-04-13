@@ -183,6 +183,54 @@ async function handleStatus(req, res) {
   });
 }
 
+// ── GET /api/user/admin?key= ──────────────────────────────────────────────────
+async function handleAdmin(req, res) {
+  cors(res);
+  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+
+  const { key } = req.query ?? {};
+  if (!key || key !== process.env.ADMIN_KEY) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const keys = await redis.keys('waterwise:creds:*');
+  const users = [];
+
+  for (const redisKey of keys) {
+    const credsRaw = await redis.get(redisKey);
+    if (!credsRaw) continue;
+    let creds;
+    try { creds = JSON.parse(credsRaw); } catch { continue; }
+
+    const latestRaw = await redis.get(`waterwise:${creds.userId}:latest`);
+    const latest    = latestRaw ? JSON.parse(latestRaw) : null;
+
+    const lastScraped = latest?.scrapedAt ?? null;
+    const staleHours  = lastScraped
+      ? Math.round((Date.now() - new Date(lastScraped)) / 3600000)
+      : null;
+
+    // Mask email: first char + *** + @domain
+    const [localPart, domain] = (creds.email ?? '').split('@');
+    const maskedEmail = localPart ? `${localPart[0]}***@${domain}` : creds.email;
+
+    users.push({
+      userId:         creds.userId,
+      name:           creds.name,
+      email:          maskedEmail,
+      createdAt:      creds.createdAt,
+      lastScraped,
+      soFarThisCycle: latest?.soFarThisCycle ?? null,
+      dataStale:      staleHours !== null ? staleHours > 25 : null,
+      dashboardUrl:   `https://waterwise-six.vercel.app?user=${creds.userId}`,
+    });
+  }
+
+  users.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
+
+  return res.status(200).json({ users, totalUsers: users.length });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
@@ -193,6 +241,7 @@ module.exports = async function handler(req, res) {
     if (tail.endsWith('/register')) return await handleRegister(req, res);
     if (tail.endsWith('/data'))     return await handleData(req, res);
     if (tail.endsWith('/status'))   return await handleStatus(req, res);
+    if (tail.endsWith('/admin'))    return await handleAdmin(req, res);
     return res.status(404).json({ error: 'Unknown /api/user/* route' });
   } catch (err) {
     console.error('api/user error:', err);
