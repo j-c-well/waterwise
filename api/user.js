@@ -18,6 +18,29 @@ function cors(res, methods = 'GET, OPTIONS') {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+async function triggerScrape() {
+  try {
+    const response = await fetch(
+      'https://api.github.com/repos/j-c-well/waterwise/actions/workflows/scrape.yml/dispatches',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': 'token ' + process.env.GITHUB_PAT,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ref: 'main' }),
+      }
+    );
+    if (response.ok) console.log('Scrape triggered for new user');
+    else console.log('Scrape trigger failed:', response.status);
+  } catch (e) {
+    console.log('Scrape trigger error:', e.message);
+  }
+}
+
 // ── POST /api/user/register ───────────────────────────────────────────────────
 async function handleRegister(req, res) {
   cors(res, 'POST, OPTIONS');
@@ -59,6 +82,9 @@ async function handleRegister(req, res) {
   ]);
 
   console.log(`Registered user ${userId} (${email.toLowerCase()})`);
+
+  // Fire-and-forget — don't block the registration response
+  triggerScrape();
 
   return res.status(201).json({
     userId,
