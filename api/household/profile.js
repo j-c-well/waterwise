@@ -1,7 +1,6 @@
 const Redis = require('ioredis');
 
 const redis = new Redis(process.env.REDIS_URL);
-const KEY = 'waterwise:household:owner';
 
 const CORS = (res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -12,6 +11,9 @@ const CORS = (res) => {
 module.exports = async function handler(req, res) {
   CORS(res);
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+
+  const { userId } = req.query ?? {};
+  const KEY = userId ? `waterwise:household:${userId}` : 'waterwise:household:owner';
 
   try {
     if (req.method === 'GET') {
