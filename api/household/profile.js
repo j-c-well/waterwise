@@ -1,4 +1,5 @@
 const Redis = require('ioredis');
+const { logEvent } = require('../../lib/analytics');
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -48,6 +49,7 @@ module.exports = async function handler(req, res) {
       updated.updatedAt = new Date().toISOString();
 
       await redis.set(KEY, JSON.stringify(updated));
+      logEvent(redis, { event: 'profile_updated', userId: userId || 'owner' });
       return res.status(200).json(updated);
     }
 

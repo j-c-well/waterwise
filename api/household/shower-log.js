@@ -1,6 +1,7 @@
 'use strict';
 
 const Redis = require('ioredis');
+const { logEvent } = require('../../lib/analytics');
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -149,6 +150,7 @@ module.exports = async function handler(req, res) {
       const pruned = log.filter(e => e.date >= ninetyDaysAgo());
 
       await redis.set(KEY, JSON.stringify(pruned));
+      logEvent(redis, { event: 'shower_assigned', userId: userId || 'owner' });
       return res.status(201).json(entry);
     }
 

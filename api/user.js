@@ -8,7 +8,8 @@
 
 const crypto  = require('crypto');
 const Redis   = require('ioredis');
-const { encrypt } = require('../lib/crypto');
+const { encrypt }   = require('../lib/crypto');
+const { logEvent }  = require('../lib/analytics');
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -167,6 +168,7 @@ async function handleData(req, res) {
     fixturesSource = 'metron';
   }
 
+  logEvent(redis, { event: 'dashboard_load', userId: userId || 'owner' });
   res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
   return res.status(200).json({
     ...data,
@@ -258,6 +260,63 @@ async function handleAdmin(req, res) {
   return res.status(200).json({ users, totalUsers: users.length });
 }
 
+// ── GET /api/analytics?key= ───────────────────────────────────────────────────
+async function handleAnalytics(req, res) {
+  cors(res);
+  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+
+  const { key } = req.query ?? {};
+  const adminKey = (process.env.ADMIN_KEY || '').trim();
+  if (!key || key !== adminKey) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const today = new Date();
+  const days = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    return d.toISOString().slice(0, 10);
+  });
+
+  const byDay    = {};
+  const byUser   = {};
+  let totalEvents = 0;
+  const uniqueUsers = new Set();
+
+  for (const day of days) {
+    const raw = await redis.lrange(`waterwise:analytics:${day}`, 0, -1);
+    if (!raw.length) continue;
+    byDay[day] = {};
+    for (const item of raw) {
+      try {
+        const e = JSON.parse(item);
+        byDay[day][e.event]  = (byDay[day][e.event]  ?? 0) + 1;
+        byUser[e.userId]     = byUser[e.userId] ?? {};
+        byUser[e.userId][e.event] = (byUser[e.userId][e.event] ?? 0) + 1;
+        uniqueUsers.add(e.userId);
+        totalEvents++;
+      } catch (_) {}
+    }
+  }
+
+  const sum = (eventName) =>
+    Object.values(byDay).reduce((t, d) => t + (d[eventName] ?? 0), 0);
+
+  return res.status(200).json({
+    summary: {
+      totalEvents,
+      uniqueUsers:       [...uniqueUsers],
+      dashboardLoads:    sum('dashboard_load'),
+      historyViews:      sum('history_view'),
+      timelineViews:     sum('timeline_view'),
+      showerAssignments: sum('shower_assigned'),
+      profileUpdates:    sum('profile_updated'),
+    },
+    byDay,
+    byUser,
+  });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
@@ -268,7 +327,8 @@ module.exports = async function handler(req, res) {
     if (tail.endsWith('/register')) return await handleRegister(req, res);
     if (tail.endsWith('/data'))     return await handleData(req, res);
     if (tail.endsWith('/status'))   return await handleStatus(req, res);
-    if (tail.endsWith('/admin'))    return await handleAdmin(req, res);
+    if (tail.endsWith('/admin'))     return await handleAdmin(req, res);
+    if (tail.endsWith('/analytics')) return await handleAnalytics(req, res);
     return res.status(404).json({ error: 'Unknown /api/user/* route' });
   } catch (err) {
     console.error('api/user error:', err);

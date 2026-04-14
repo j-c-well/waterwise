@@ -1,4 +1,5 @@
 const Redis = require('ioredis');
+const { logEvent } = require('../lib/analytics');
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -31,6 +32,7 @@ module.exports = async function handler(req, res) {
       .filter(Boolean)
       .sort((a, b) => a.date.localeCompare(b.date));
 
+    logEvent(redis, { event: 'history_view', userId: userId || 'owner' });
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
     return res.status(200).json(history);
   } catch (err) {
