@@ -150,7 +150,7 @@ module.exports = async function handler(req, res) {
       const pruned = log.filter(e => e.date >= ninetyDaysAgo());
 
       await redis.set(KEY, JSON.stringify(pruned));
-      logEvent(redis, { event: 'shower_assigned', userId: userId || 'owner' });
+      logEvent(redis, { event: 'shower_assigned', userId: userId || 'owner' }, req);
       return res.status(201).json(entry);
     }
 

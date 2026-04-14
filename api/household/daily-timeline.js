@@ -774,7 +774,7 @@ module.exports = async function handler(req, res) {
       };
     }
 
-    logEvent(redis, { event: 'timeline_view', userId: userId || 'owner', date });
+    logEvent(redis, { event: 'timeline_view', userId: userId || 'owner', date }, req);
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
     return res.status(200).json(body);
   } catch (err) {

@@ -168,7 +168,7 @@ async function handleData(req, res) {
     fixturesSource = 'metron';
   }
 
-  logEvent(redis, { event: 'dashboard_load', userId: userId || 'owner' });
+  logEvent(redis, { event: 'dashboard_load', userId: userId || 'owner' }, req);
   res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
   return res.status(200).json({
     ...data,
@@ -278,9 +278,10 @@ async function handleAnalytics(req, res) {
     return d.toISOString().slice(0, 10);
   });
 
-  const byDay    = {};
-  const byUser   = {};
-  let totalEvents = 0;
+  const byDay       = {};
+  const byUser      = {};
+  const byUserAgent = { mobile: 0, desktop: 0, unknown: 0 };
+  let totalEvents   = 0;
   const uniqueUsers = new Set();
 
   for (const day of days) {
@@ -290,10 +291,12 @@ async function handleAnalytics(req, res) {
     for (const item of raw) {
       try {
         const e = JSON.parse(item);
-        byDay[day][e.event]  = (byDay[day][e.event]  ?? 0) + 1;
-        byUser[e.userId]     = byUser[e.userId] ?? {};
+        byDay[day][e.event]       = (byDay[day][e.event]  ?? 0) + 1;
+        byUser[e.userId]          = byUser[e.userId] ?? {};
         byUser[e.userId][e.event] = (byUser[e.userId][e.event] ?? 0) + 1;
         uniqueUsers.add(e.userId);
+        const uaBucket = e.ua ?? 'unknown';
+        byUserAgent[uaBucket]     = (byUserAgent[uaBucket] ?? 0) + 1;
         totalEvents++;
       } catch (_) {}
     }
@@ -311,6 +314,7 @@ async function handleAnalytics(req, res) {
       timelineViews:     sum('timeline_view'),
       showerAssignments: sum('shower_assigned'),
       profileUpdates:    sum('profile_updated'),
+      byUserAgent,
     },
     byDay,
     byUser,

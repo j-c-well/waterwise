@@ -49,7 +49,7 @@ module.exports = async function handler(req, res) {
       updated.updatedAt = new Date().toISOString();
 
       await redis.set(KEY, JSON.stringify(updated));
-      logEvent(redis, { event: 'profile_updated', userId: userId || 'owner' });
+      logEvent(redis, { event: 'profile_updated', userId: userId || 'owner' }, req);
       return res.status(200).json(updated);
     }
 
