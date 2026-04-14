@@ -54,4 +54,27 @@ async function sendAlerts(payload) {
   console.log('No alerts to send');
 }
 
-module.exports = { sendAlerts };
+// Send tier/spike alerts to a specific email address (for registered users)
+async function sendAlertEmail(payload, toEmail) {
+  const resendApiKey = process.env.RESEND_API_KEY;
+  if (!resendApiKey || !toEmail) return;
+
+  const resend = new Resend(resendApiKey);
+
+  if (payload.tierCrossedToday || payload.approachingTierAlert) {
+    const subject = payload.tierCrossedToday
+      ? `You've crossed into Tier ${payload.currentTier} · WaterWise`
+      : `Heads up — ${Math.round(payload.galsTilNextTier).toLocaleString()} gal from Tier ${payload.currentTier + 1} · WaterWise`;
+    const { html, text } = tierAlert(payload);
+    await resend.emails.send({ from: 'onboarding@resend.dev', to: toEmail, subject, html, text });
+    return;
+  }
+
+  if (payload.spikeAlert) {
+    const subject = `Unusual water use · ${payload.spikeMultiplier}x your normal · WaterWise`;
+    const { html, text } = spikeAlert(payload, payload.waterConsumptionToday, payload.sevenDayAvg);
+    await resend.emails.send({ from: 'onboarding@resend.dev', to: toEmail, subject, html, text });
+  }
+}
+
+module.exports = { sendAlerts, sendAlertEmail };

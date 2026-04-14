@@ -2,6 +2,7 @@ const { chromium } = require('playwright');
 const https = require('https');
 const path  = require('path');
 const { spawn } = require('child_process');
+const { sendAlertEmail } = require('./email-alert');
 
 const SNOTEL_URL = 'https://wcc.sc.egov.usda.gov/reportGenerator/view_csv/customSingleStationReport/daily/936:CO:SNTL%7Cid=%22%22%7Cname/-2,0/WTEQ::value,WTEQ::median_1991,PREC::value,PREC::median_1991';
 
@@ -266,6 +267,16 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
       const summary = lines.find(l => /Rule 6|correctedFixtures|complete/.test(l)) ?? '';
       if (code !== 0) console.error(`  Corrections failed (exit ${code}):`, lines.slice(-3).join(' | '));
       else console.log(`  Corrections OK — ${summary}`);
+    }
+
+    // Send alerts to this user's email if thresholds are crossed
+    if (payload.tierCrossedToday || payload.approachingTierAlert || payload.spikeAlert) {
+      try {
+        await sendAlertEmail(payload, email);
+        console.log(`  Alert email sent to ${email}`);
+      } catch (e) {
+        console.log(`  Alert email failed for ${email}:`, e.message);
+      }
     }
 
     console.log(`✓ Scraped ${userId} (${email}): ${soFarThisCycle}G so far this cycle`);

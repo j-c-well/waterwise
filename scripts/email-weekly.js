@@ -52,6 +52,39 @@ async function main() {
     });
 
     console.log('Email sent:', result);
+
+    // ── Multi-user weekly emails ───────────────────────────────────────────
+    const credKeys = await redis.keys('waterwise:creds:*');
+    for (const credKey of credKeys) {
+      try {
+        const creds = JSON.parse(await redis.get(credKey));
+        if (!creds?.userId || !creds?.email) continue;
+
+        const userLatestRaw = await redis.get(`waterwise:${creds.userId}:latest`);
+        if (!userLatestRaw) continue;
+        const userData = JSON.parse(userLatestRaw);
+
+        const { html: userHtml, text: userText } = weeklySnapshot(userData, []);
+
+        const userDate        = new Date();
+        const userMonthName   = userDate.toLocaleString('en-US', { month: 'long' });
+        const userYear        = userDate.getFullYear();
+        const userBillingDay  = userData.billingCycleDay ?? userDate.getDate();
+        const userDaysInMonth = userData.daysInMonth ?? 30;
+        const userSubject     = `${creds.name}'s WaterWise · ${userMonthName} ${userYear} · Day ${userBillingDay} of ${userDaysInMonth}`;
+
+        await resend.emails.send({
+          from:    'onboarding@resend.dev',
+          to:      creds.email,
+          subject: userSubject,
+          html:    userHtml,
+          text:    userText,
+        });
+        console.log('Weekly email sent to', creds.email);
+      } catch (e) {
+        console.log('Weekly email failed for', credKey, ':', e.message);
+      }
+    }
   } finally {
     await redis.quit();
   }
