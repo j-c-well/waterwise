@@ -79,6 +79,13 @@ module.exports = async function handler(req, res) {
     const anomalies2  = anomalyRaw2 ? JSON.parse(anomalyRaw2) : [];
     const unconfirmedAnomalies = anomalies2.filter(a => !a.confirmedAt).length;
 
+    // Seasonal context
+    const now = new Date();
+    const month = now.getMonth() + 1; // 1-12
+    const day   = now.getDate();
+    const irrigationSeason    = (month > 5 || (month === 5 && day >= 1)) && month < 11; // May 1 – Oct 31
+    const irrigationApproaching = month === 4 && day >= 15; // Apr 15-30
+
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
     return res.status(200).json({
       ...data,
@@ -90,6 +97,12 @@ module.exports = async function handler(req, res) {
       leakAlert,
       anomalies: anomalies2,
       unconfirmedAnomalies,
+      seasonalContext: {
+        irrigationSeason,
+        irrigationApproaching,
+        emdNoWaterHours: irrigationSeason ? '10am - 6pm' : null,
+        droughtLevel: 1,
+      },
     });
   } catch (err) {
     console.error('Data fetch error:', err);
