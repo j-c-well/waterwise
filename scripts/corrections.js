@@ -369,6 +369,96 @@ function applyBidetDetection(intervals, profile) {
   return count;
 }
 
+// Rule 7: Continuous WASHING_MACHINE → SHOWER
+// A real washing machine has burst/pause/burst fills separated by agitation gaps.
+// Continuous unbroken flow ≥ 8 min at 0.8–2.5 GPM and 6–30G is a shower misclassified
+// by Metron. Groups with gap ≤ 2 min are shower candidates.
+// Separate check: groups with ≤ 5-min gaps spanning 45–90 min at 15–55G are confirmed
+// real washer cycles and are logged but kept.
+function applyWashingMachineReclassification(intervals) {
+  const wmIdxs = intervals
+    .map((iv, i) => ({ iv, i }))
+    .filter(({ iv }) =>
+      iv.classification === 'WASHING_MACHINE' ||
+      iv.classification === 'CLOTHES_WASHER'  ||
+      iv.classification === 'CLOTHESWASHER'
+    );
+
+  if (!wmIdxs.length) return 0;
+
+  // ── shower candidate groups (gap ≤ 2 min) ────────────────────────────────
+  const showerGroups = [];
+  let cur = [wmIdxs[0]];
+  for (let k = 1; k < wmIdxs.length; k++) {
+    const gap = wmIdxs[k].iv.time && wmIdxs[k - 1].iv.time
+      ? wmIdxs[k].iv.time - wmIdxs[k - 1].iv.time : Infinity;
+    if (gap <= 2 * MIN) { cur.push(wmIdxs[k]); }
+    else { showerGroups.push(cur); cur = [wmIdxs[k]]; }
+  }
+  showerGroups.push(cur);
+
+  let count = 0;
+  for (const grp of showerGroups) {
+    const first = grp[0].iv;
+    const last  = grp[grp.length - 1].iv;
+    if (!first.time || !last.time) continue;
+
+    const spanMin  = (last.time - first.time) / MIN;
+    const totalGal = grp.reduce((s, c) => s + c.iv.volume, 0);
+    const avgFlow  = spanMin > 0 ? totalGal / spanMin : totalGal;
+    const hourUTC  = first.time.getUTCHours();
+
+    const isShower =
+      spanMin  >= 8   &&
+      avgFlow  >= 0.8 && avgFlow  <= 2.5 &&
+      totalGal >= 6   && totalGal <= 30  &&
+      hourUTC  >= 5   && hourUTC  <  22;
+
+    if (isShower) {
+      for (const { i } of grp) {
+        intervals[i] = { ...intervals[i], classification: 'SHOWER', correctedBy: 'rule7' };
+        count++;
+      }
+      console.log(`Rule 7: reclassified continuous WashingMachine as SHOWER — ${Math.round(spanMin)}min, ${Math.round(totalGal * 10) / 10}G, ${Math.round(avgFlow * 10) / 10} GPM`);
+    }
+  }
+
+  // ── real washer check: ≤ 5-min gap groups spanning 45–90 min, 15–55G ─────
+  const remaining = intervals
+    .map((iv, i) => ({ iv, i }))
+    .filter(({ iv }) =>
+      iv.classification === 'WASHING_MACHINE' ||
+      iv.classification === 'CLOTHES_WASHER'  ||
+      iv.classification === 'CLOTHESWASHER'
+    );
+
+  if (remaining.length) {
+    const washerGroups = [];
+    let wcur = [remaining[0]];
+    for (let k = 1; k < remaining.length; k++) {
+      const gap = remaining[k].iv.time && remaining[k - 1].iv.time
+        ? remaining[k].iv.time - remaining[k - 1].iv.time : Infinity;
+      if (gap <= 5 * MIN) { wcur.push(remaining[k]); }
+      else { washerGroups.push(wcur); wcur = [remaining[k]]; }
+    }
+    washerGroups.push(wcur);
+
+    for (const grp of washerGroups) {
+      const first = grp[0].iv;
+      const last  = grp[grp.length - 1].iv;
+      if (!first.time || !last.time) continue;
+      const spanMin  = (last.time - first.time) / MIN;
+      const totalGal = grp.reduce((s, c) => s + c.iv.volume, 0);
+      if (spanMin >= 45 && spanMin <= 90 && totalGal >= 15 && totalGal <= 55) {
+        console.log(`Rule 7: confirmed real WashingMachine — ${Math.round(spanMin)}min, ${Math.round(totalGal * 10) / 10}G — keeping as WashingMachine`);
+      }
+    }
+  }
+
+  if (!count) console.log('Rule 7: no WashingMachine→SHOWER reclassifications');
+  return count;
+}
+
 // Rule 6: High-flow long-duration SHOWER → BATH
 // Triggers when: span ≥ 10 min, total ≥ 20G, avg flow ≥ 2.0 GPM,
 // and no BIDET_WASH/REFILL within 3 min of either end (bidet flanks a flush, not a fill).
@@ -602,6 +692,7 @@ async function main() {
     // ── apply rules (mutates intervals array) ──
     applyDishwasherDetection(intervals, profile);
     applyEventLogMatching(intervals, eventLog, profile);
+    applyWashingMachineReclassification(intervals);
     applyToiletSplit(intervals);
     applyShowerReclassification(intervals);
     applyBidetDetection(intervals, profile);
