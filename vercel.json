@@ -29,6 +29,7 @@
     { "source": "/api/user/data",                    "destination": "/api/user.js" },
     { "source": "/api/user/status",                  "destination": "/api/user.js" },
     { "source": "/api/user/admin",                   "destination": "/api/user.js" },
-    { "source": "/api/analytics",                    "destination": "/api/user.js" }
+    { "source": "/api/analytics",                    "destination": "/api/user.js" },
+    { "source": "/api/household/event-confirm",       "destination": "/api/household/daily-timeline.js" }
   ]
 }

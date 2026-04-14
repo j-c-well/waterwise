@@ -491,6 +491,52 @@ function buildCorrectedFixtures(intervals) {
   };
 }
 
+// ── anomaly detection ─────────────────────────────────────────────────────────
+
+function formatUTCTime(dt) {
+  if (!dt) return null;
+  const h = dt.getUTCHours();
+  const m = dt.getUTCMinutes();
+  const h12 = h % 12 || 12;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  return h12 + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
+}
+
+function detectAnomalies(intervals) {
+  const anomalies = [];
+  let group = [];
+
+  for (const iv of [...intervals, null]) {
+    if (iv && (iv.classification === 'OTHER' || iv.classification === 'LEAK')) {
+      group.push(iv);
+    } else {
+      if (group.length > 0) {
+        const totalGal  = group.reduce((s, i) => s + i.volume, 0);
+        const firstTime = group[0].time;
+        const lastTime  = group[group.length - 1].time;
+        const durationMin = firstTime && lastTime
+          ? Math.round((lastTime - firstTime) / 60000)
+          : 0;
+
+        if (totalGal >= 10) {
+          anomalies.push({
+            timeStart:     formatUTCTime(firstTime),
+            timeEnd:       formatUTCTime(lastTime),
+            gallons:       Math.round(totalGal * 10) / 10,
+            duration:      durationMin,
+            intervalCount: group.length,
+            category:      null,
+            confirmedAt:   null,
+          });
+        }
+        group = [];
+      }
+    }
+  }
+
+  return anomalies;
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -594,6 +640,23 @@ async function main() {
       await redis.set(latestKey, JSON.stringify(patched));
       console.log(`Patched ${latestKey} with correctedFixtures`);
     }
+
+    // ── anomaly detection ──
+    const anomalies = detectAnomalies(intervals);
+    const anomalyKey = `${ns}:anomalies:${targetDate}`;
+    const existingAnomalyRaw = await redis.get(anomalyKey);
+    const existingAnomalies  = existingAnomalyRaw ? JSON.parse(existingAnomalyRaw) : [];
+
+    // Merge: preserve confirmed entries, add new unconfirmed
+    const mergedAnomalies = anomalies.map(a => {
+      const confirmed = existingAnomalies.find(e =>
+        e.timeStart === a.timeStart && Math.abs(e.gallons - a.gallons) < 1
+      );
+      return confirmed ?? a;
+    });
+
+    await redis.set(anomalyKey, JSON.stringify(mergedAnomalies), 'EX', 7776000);
+    console.log(`Anomalies detected: ${mergedAnomalies.length} (${mergedAnomalies.filter(a => !a.confirmedAt).length} unconfirmed)`);
 
     console.log('corrections.js complete');
   } finally {

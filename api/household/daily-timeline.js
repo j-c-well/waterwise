@@ -696,11 +696,96 @@ function shouldKeep(grp) {
   return true;
 }
 
+// ── event confirm handler ─────────────────────────────────────────────────────
+
+async function handleEventConfirm(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  try {
+    const { userId, date, timeStart, gallons, category, subcategory, notes } = req.body ?? {};
+
+    if (!date || !timeStart || gallons == null) {
+      return res.status(400).json({ error: 'Missing required fields: date, timeStart, gallons' });
+    }
+
+    const ns = userId ? `waterwise:${userId}` : 'waterwise';
+
+    // Read and update anomalies
+    const anomalyRaw = await redis.get(`${ns}:anomalies:${date}`);
+    const anomalies  = anomalyRaw ? JSON.parse(anomalyRaw) : [];
+
+    const idx = anomalies.findIndex(e =>
+      e.timeStart === timeStart && Math.abs(e.gallons - gallons) < 1
+    );
+
+    if (idx === -1) {
+      return res.status(404).json({ error: 'Anomaly not found' });
+    }
+
+    const updatedAnomaly = {
+      ...anomalies[idx],
+      category:    category    ?? anomalies[idx].category,
+      subcategory: subcategory ?? anomalies[idx].subcategory,
+      notes:       notes       ?? anomalies[idx].notes,
+      confirmedAt: new Date().toISOString(),
+    };
+    anomalies[idx] = updatedAnomaly;
+
+    await redis.set(`${ns}:anomalies:${date}`, JSON.stringify(anomalies), 'EX', 7776000);
+
+    // Update corrected fixtures if available
+    const correctedRaw = await redis.get(`${ns}:corrected:${date}`);
+    if (correctedRaw) {
+      const corrected = JSON.parse(correctedRaw);
+      const cf = corrected.correctedFixtures;
+
+      // CATEGORY_MAP: confirm category → correctedFixtures key
+      const CATEGORY_MAP = {
+        shower:     'shower',
+        bath:       'bath',
+        sink:       'sink',
+        dishwasher: 'dishwasher',
+        laundry:    'washingMachine',
+      };
+      // toilet and bidet are complex — skip fixture update for those
+
+      const fixtureKey = CATEGORY_MAP[category?.toLowerCase()];
+      if (fixtureKey && typeof cf[fixtureKey] === 'number') {
+        cf[fixtureKey] = Math.round((cf[fixtureKey] + gallons) * 10) / 10;
+      } else if (fixtureKey === undefined && category && !['toilet', 'bidet'].includes(category?.toLowerCase())) {
+        // Unknown category → add to other
+        cf.other = Math.round(((cf.other ?? 0) + gallons) * 10) / 10;
+      }
+
+      corrected.correctedFixtures = cf;
+      await redis.set(`${ns}:corrected:${date}`, JSON.stringify(corrected), 'EX', 7776000);
+    }
+
+    const unconfirmedCount = anomalies.filter(a => !a.confirmedAt).length;
+
+    return res.status(200).json({ updated: updatedAnomaly, unconfirmedCount });
+  } catch (err) {
+    console.error('event-confirm error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
 // ── handler ───────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
   CORS(res);
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+
+  // Sub-route: POST /api/household/event-confirm
+  if (req.url?.includes('/event-confirm')) {
+    return handleEventConfirm(req, res);
+  }
+
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   // Parse date and userId params
@@ -755,12 +840,26 @@ module.exports = async function handler(req, res) {
 
     const events = filtered.map(buildEvent);
 
+    // Read anomalies for this date
+    const anomalyRaw = await redis.get(`${ns}:anomalies:${date}`);
+    const anomalies  = anomalyRaw ? JSON.parse(anomalyRaw) : [];
+
+    // Add urgency tier
+    const anomaliesWithUrgency = anomalies.map(a => ({
+      ...a,
+      urgency: a.gallons >= 30 ? 'high' : a.gallons >= 15 ? 'medium' : 'low',
+    }));
+
+    const unconfirmedCount = anomaliesWithUrgency.filter(a => !a.confirmedAt).length;
+
     const body = {
       date,
       timezone: 'local-as-utc',
       events,
       summary,
       corrections,
+      anomalies: anomaliesWithUrgency,
+      unconfirmedCount,
     };
 
     // Raw sample in non-prod for debugging Metron field names

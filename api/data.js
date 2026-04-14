@@ -73,6 +73,12 @@ module.exports = async function handler(req, res) {
       fixturesSource = 'metron';
     }
 
+    // Anomaly summary
+    const anomalyKey2 = `waterwise:anomalies:${data.consumptionDate}`;
+    const anomalyRaw2 = data.consumptionDate ? await redis.get(anomalyKey2) : null;
+    const anomalies2  = anomalyRaw2 ? JSON.parse(anomalyRaw2) : [];
+    const unconfirmedAnomalies = anomalies2.filter(a => !a.confirmedAt).length;
+
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
     return res.status(200).json({
       ...data,
@@ -82,6 +88,8 @@ module.exports = async function handler(req, res) {
       staleHours,
       householdProfile,
       leakAlert,
+      anomalies: anomalies2,
+      unconfirmedAnomalies,
     });
   } catch (err) {
     console.error('Data fetch error:', err);
