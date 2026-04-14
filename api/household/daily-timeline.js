@@ -702,19 +702,21 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  // Parse date param — default to yesterday
+  // Parse date and userId params
   let date = req.query?.date;
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     const d = new Date();
     d.setDate(d.getDate() - 1);
     date = d.toISOString().slice(0, 10);
   }
+  const { userId } = req.query ?? {};
+  const ns = userId ? `waterwise:${userId}` : 'waterwise';
 
   try {
     const [intervalsRaw, profileRaw, eventLogRaw] = await Promise.all([
-      redis.get(`waterwise:intervals:${date}`),
-      redis.get('waterwise:household:owner'),
-      redis.get('waterwise:event-log:owner'),
+      redis.get(`${ns}:intervals:${date}`),
+      redis.get(userId ? `waterwise:household:${userId}` : 'waterwise:household:owner'),
+      redis.get(userId ? `waterwise:event-log:${userId}` : 'waterwise:event-log:owner'),
     ]);
 
     if (!intervalsRaw) {
