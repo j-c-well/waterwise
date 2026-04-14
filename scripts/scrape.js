@@ -340,6 +340,10 @@ async function scrapeAllUsers(redis, now, snowFields, consumptionDate) {
 
 async function main() {
   console.log('Scraper starting:', new Date().toISOString());
+  const hour = new Date().getUTCHours(); // Metron stores local MT as UTC
+  if (hour >= 6 && hour <= 22) {
+    console.log('WARNING: Manual scrape during active hours — interval data may contain partial readings');
+  }
   const email = process.env.WATERSCOPE_EMAIL;
   const password = process.env.WATERSCOPE_PASSWORD;
   const redisUrl = process.env.REDIS_URL;
