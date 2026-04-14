@@ -30,6 +30,7 @@ jobs:
           REDIS_URL: ${{ secrets.REDIS_URL }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           REPORT_EMAIL: ${{ secrets.REPORT_EMAIL }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
         run: node scripts/scrape.js
 
       - name: Run corrections
