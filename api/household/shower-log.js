@@ -3,7 +3,6 @@
 const Redis = require('ioredis');
 
 const redis = new Redis(process.env.REDIS_URL);
-const KEY   = 'waterwise:shower-log:owner';
 
 const CORS = (res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -95,11 +94,15 @@ module.exports = async function handler(req, res) {
   CORS(res);
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
+  const { userId } = req.method === 'GET' ? (req.query ?? {}) : (req.body ?? {});
+  const KEY        = userId ? `waterwise:shower-log:${userId}` : 'waterwise:shower-log:owner';
+  const profileKey = userId ? `waterwise:household:${userId}` : 'waterwise:household:owner';
+
   try {
     if (req.method === 'GET') {
       const [raw, profileRaw] = await Promise.all([
         redis.get(KEY),
-        redis.get('waterwise:household:owner'),
+        redis.get(profileKey),
       ]);
       const log     = raw        ? JSON.parse(raw)        : [];
       const profile = profileRaw ? JSON.parse(profileRaw) : null;
@@ -124,7 +127,7 @@ module.exports = async function handler(req, res) {
         return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
       }
 
-      const profileRaw = await redis.get('waterwise:household:owner');
+      const profileRaw = await redis.get(profileKey);
       const profile    = profileRaw ? JSON.parse(profileRaw) : null;
       const member     = (profile?.members ?? []).find(m => m.id === memberId);
 

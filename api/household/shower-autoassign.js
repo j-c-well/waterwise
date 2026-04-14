@@ -120,18 +120,19 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const body = req.body ?? {};
-  let { date } = body;
+  let { date, userId } = body;
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     const d = new Date();
     d.setDate(d.getDate() - 1);
     date = d.toISOString().slice(0, 10);
   }
+  const ns = userId ? `waterwise:${userId}` : 'waterwise';
 
   try {
     const [correctedRaw, profileRaw, showerLogRaw] = await Promise.all([
-      redis.get(`waterwise:corrected:${date}`),
-      redis.get('waterwise:household:owner'),
-      redis.get('waterwise:shower-log:owner'),
+      redis.get(`${ns}:corrected:${date}`),
+      redis.get(userId ? `waterwise:household:${userId}` : 'waterwise:household:owner'),
+      redis.get(userId ? `waterwise:shower-log:${userId}` : 'waterwise:shower-log:owner'),
     ]);
 
     if (!correctedRaw) {
