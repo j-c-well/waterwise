@@ -15,18 +15,20 @@ if (fs.existsSync(envPath)) {
 const { chromium } = require('playwright');
 const { spawn }    = require('child_process');
 const Redis        = require('ioredis');
+const { decrypt }  = require('../lib/crypto');
 
 // ── config ────────────────────────────────────────────────────────────────────
 
-const DATES = [
-  '2026-04-02',
-  '2026-04-03',
-  '2026-04-04',
-  '2026-04-05',
-  '2026-04-06',
-  '2026-04-07',
-  '2026-04-08',
-];
+// Last 7 days (excluding today — Metron data lags ~1 day)
+function lastNDates(n = 7) {
+  const dates = [];
+  for (let i = 1; i <= n; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates.reverse(); // oldest first
+}
 
 const ACCOUNT_ID = 1735;
 const METER_ID   = 3208158;
@@ -39,14 +41,12 @@ function toMetronDate(iso, timeStr = '12:00:00 AM') {
   return `${parseInt(month)}/${parseInt(day)}/${year} ${timeStr}`;
 }
 
-// Run corrections.js for a specific date, resolve with { code, lines }
-function runCorrections(date) {
+// Run corrections.js for a specific date (and optional userId), resolve with { code, lines }
+function runCorrections(date, userId) {
+  const args = [path.join(__dirname, 'corrections.js'), date];
+  if (userId) args.push('--userId', userId);
   return new Promise((resolve) => {
-    const child = spawn(
-      process.execPath,
-      [path.join(__dirname, 'corrections.js'), date],
-      { env: process.env, stdio: 'pipe' }
-    );
+    const child = spawn(process.execPath, args, { env: process.env, stdio: 'pipe' });
     const lines = [];
     child.stdout.on('data', d => lines.push(...d.toString().split('\n').filter(Boolean)));
     child.stderr.on('data', d => lines.push(...d.toString().split('\n').filter(Boolean)));
@@ -57,18 +57,43 @@ function runCorrections(date) {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { REDIS_URL, WATERSCOPE_EMAIL, WATERSCOPE_PASSWORD } = process.env;
-  if (!REDIS_URL)           throw new Error('REDIS_URL not set');
-  if (!WATERSCOPE_EMAIL)    throw new Error('WATERSCOPE_EMAIL not set');
-  if (!WATERSCOPE_PASSWORD) throw new Error('WATERSCOPE_PASSWORD not set');
+  const { REDIS_URL } = process.env;
+  if (!REDIS_URL) throw new Error('REDIS_URL not set');
+
+  // Parse --userId flag
+  const args   = process.argv.slice(2);
+  const uidIdx = args.indexOf('--userId');
+  const userId = uidIdx !== -1 ? args[uidIdx + 1] : null;
 
   const redis = new Redis(REDIS_URL);
+
+  let email, password;
+
+  if (userId) {
+    // Load and decrypt credentials for registered user
+    console.log(`Loading credentials for userId: ${userId}`);
+    const credsRaw = await redis.get(`waterwise:creds:${userId}`);
+    if (!credsRaw) throw new Error(`No credentials found for userId ${userId}`);
+    const creds = JSON.parse(credsRaw);
+    email    = creds.email;
+    password = decrypt(creds.encryptedPassword, creds.iv, creds.authTag);
+    console.log(`Loaded credentials for ${email}`);
+  } else {
+    email    = process.env.WATERSCOPE_EMAIL;
+    password = process.env.WATERSCOPE_PASSWORD;
+    if (!email)    throw new Error('WATERSCOPE_EMAIL not set');
+    if (!password) throw new Error('WATERSCOPE_PASSWORD not set');
+  }
+
+  const ns    = userId ? `waterwise:${userId}` : 'waterwise';
+  const DATES = lastNDates(7);
+  console.log(`Backfill window: ${DATES[0]} → ${DATES[DATES.length - 1]}`);
 
   // Check which dates are already populated
   const checks = await Promise.all(
     DATES.map(async date => ({
       date,
-      exists: !!(await redis.get(`waterwise:intervals:${date}`)),
+      exists: !!(await redis.get(`${ns}:intervals:${date}`)),
     }))
   );
   const todo = checks.filter(c => !c.exists).map(c => c.date);
@@ -104,13 +129,13 @@ async function main() {
     // ── login (same flow as scrape.js) ────────────────────────────────────────
     console.log('Logging in to WaterScope...');
     await page.goto('https://waterscope.us/Home/Main', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.fill('#txtSearchUserName', WATERSCOPE_EMAIL);
+    await page.fill('#txtSearchUserName', email);
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 }),
       page.click('#searchUserName'),
     ]);
     await page.waitForSelector('#password', { timeout: 60000 });
-    await page.fill('#password', WATERSCOPE_PASSWORD);
+    await page.fill('#password', password);
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 }),
       page.click('#next'),
@@ -222,17 +247,17 @@ async function main() {
       }
 
       // Save raw intervals
-      const intervalKey = `waterwise:intervals:${date}`;
+      const intervalKey = `${ns}:intervals:${date}`;
       await redis.set(intervalKey, JSON.stringify(parsed), 'EX', 7776000);
       console.log(`  saved ${rowArray.length} rows → ${intervalKey}`);
 
       // Run corrections
-      const { code, lines } = await runCorrections(date);
+      const { code, lines } = await runCorrections(date, userId);
       if (code !== 0) {
         console.error(`  corrections.js exited ${code}:`);
         lines.forEach(l => console.error('   ', l));
       } else {
-        const ruleLines = lines.filter(l => /Rule [1-5]:|correctedFixtures|complete/.test(l));
+        const ruleLines = lines.filter(l => /Rule [1-7]:|correctedFixtures|complete/.test(l));
         ruleLines.forEach(l => console.log('  ', l));
         console.log(`  ✓ Backfilled ${date}: ${rowArray.length} intervals`);
       }
