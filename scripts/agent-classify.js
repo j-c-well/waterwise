@@ -132,7 +132,7 @@ function finalizeGroup(g) {
 
 // ── Step 2: Build prompt ──────────────────────────────────────────────────────
 
-function buildPrompt({ date, dayOfWeek, events, profile, signatures, billingCtx, prevDayCtx }) {
+function buildPrompt({ date, dayOfWeek, events, profile, signatures, billingCtx, prevDayCtx, dishwasherSigCount, dishwasherSigTimes }) {
   const system = `You are a water use analyst for a residential smart meter monitoring system. You classify household water events based on flow data and household context. Always respond with valid JSON only — no explanation, no markdown, just JSON.`;
 
   // Household context block
@@ -161,6 +161,23 @@ function buildPrompt({ date, dayOfWeek, events, profile, signatures, billingCtx,
       ).join('\n')
     : '  None yet';
 
+  // Dishwasher signature context block
+  const dishwasherLines = [];
+  if (profile?.dishwasher?.confirmed) {
+    dishwasherLines.push(`Confirmed dishwasher runs on file: ${dishwasherSigCount ?? 0}`);
+    if (dishwasherSigTimes?.length) {
+      dishwasherLines.push(`Recent dishwasher run times: ${dishwasherSigTimes.slice(0, 7).join(', ')}`);
+    }
+    if ((dishwasherSigCount ?? 0) < 5) {
+      dishwasherLines.push(
+        'IMPORTANT: Fewer than 5 confirmed dishwasher runs are on file for this household. ' +
+        'Do NOT classify any event as "dishwasher" — instead surface as an anomaly with ' +
+        'question "Possible dishwasher?" so the user can confirm. Set confidence to 0.0 for ' +
+        'any dishwasher classification.'
+      );
+    }
+  }
+
   // Billing context block
   const billingLines = billingCtx
     ? [`Billing cycle day: ${billingCtx.billingCycleDay}`,
@@ -178,6 +195,8 @@ function buildPrompt({ date, dayOfWeek, events, profile, signatures, billingCtx,
     '--- Confirmed Flow Signatures (recent) ---',
     sigLines,
     '',
+    dishwasherLines.length ? '--- Dishwasher Context ---\n' + dishwasherLines.join('\n') : '',
+    '',
     billingLines.length ? '--- Billing Context ---\n' + billingLines.join('\n') : '',
     '',
     prevDayCtx ? `--- Previous Day Summary ---\n${prevDayCtx}` : '',
@@ -186,6 +205,7 @@ function buildPrompt({ date, dayOfWeek, events, profile, signatures, billingCtx,
     JSON.stringify(events, null, 2),
     '',
     'Classify each event. For ambiguous events under 0.5G or under 2 min, you may include in anomalies instead.',
+    'For appliance classification, prefer surfacing as a question over auto-classifying. A wrong classification destroys user trust. An honest question builds it.',
     'Return JSON with this exact structure:',
     JSON.stringify({
       classifications: [{
@@ -209,6 +229,46 @@ function buildPrompt({ date, dayOfWeek, events, profile, signatures, billingCtx,
   ].filter(l => l !== undefined).join('\n');
 
   return { system, userPrompt };
+}
+
+// ── Step 3.5: Post-process confidence thresholds ──────────────────────────────
+
+function applyConfidenceThresholds(agentResult, dishwasherSigCount) {
+  const classified = [];
+  const anomalies  = [...(agentResult.anomalies ?? [])];
+
+  for (const c of (agentResult.classifications ?? [])) {
+    const conf = c.confidence ?? 0;
+
+    // Dishwasher restriction: fewer than 5 confirmed sigs → anomaly only regardless of confidence
+    if (normalizeClass(c.classification) === 'dishwasher' && (dishwasherSigCount ?? 0) < 5) {
+      anomalies.push({
+        timeStart: c.timeStart,
+        gallons:   c.gallons,
+        urgency:   'low',
+        question:  `Possible dishwasher? (~${c.gallons}G${c.reasoning ? ', ' + c.reasoning : ''})`,
+      });
+      continue;
+    }
+
+    if (conf < 0.75) {
+      // Below threshold — surface as anomaly instead of classifying
+      anomalies.push({
+        timeStart: c.timeStart,
+        gallons:   c.gallons,
+        urgency:   'low',
+        question:  c.reasoning ? `Unclear: ${c.reasoning}` : `Unclear event — ${c.classification}?`,
+      });
+    } else {
+      // 0.75–0.89 → needsConfirmation; >= 0.90 → auto-classify
+      classified.push({
+        ...c,
+        needsConfirmation: conf < 0.90 ? true : (c.needsConfirmation ?? false),
+      });
+    }
+  }
+
+  return { ...agentResult, classifications: classified, anomalies };
 }
 
 // ── Step 5: Compare with corrections output ───────────────────────────────────
@@ -338,6 +398,11 @@ async function main() {
       .map(s => { try { return JSON.parse(s); } catch { return null; } })
       .filter(Boolean);
 
+    // Dishwasher-specific signature context
+    const dishwasherSigs     = signatures.filter(s => s.category === 'dishwasher');
+    const dishwasherSigCount = dishwasherSigs.length;
+    const dishwasherSigTimes = dishwasherSigs.map(s => s.timeOfDay).filter(Boolean);
+
     // ── Previous day context ────────────────────────────────────────────────
     const prevDate    = new Date(new Date(targetDate).getTime() - 86400000).toISOString().slice(0, 10);
     const prevAgentRaw = await redis.get(`${ns}:agent-classified:${prevDate}`);
@@ -382,6 +447,8 @@ async function main() {
       signatures,
       billingCtx,
       prevDayCtx,
+      dishwasherSigCount,
+      dishwasherSigTimes,
     });
 
     // ── Step 3: Call Claude API ──────────────────────────────────────────────
@@ -400,7 +467,12 @@ async function main() {
       agentResult = JSON.parse(text);
       console.log(`Agent returned ${(agentResult.classifications ?? []).length} classifications, ` +
                   `${(agentResult.anomalies ?? []).length} anomalies, ` +
-                  `${(agentResult.insights ?? []).length} insights`);
+                  `${(agentResult.insights ?? []).length} insights (pre-threshold)`);
+
+      // Apply confidence thresholds and dishwasher restriction
+      agentResult = applyConfidenceThresholds(agentResult, dishwasherSigCount);
+      console.log(`After thresholds: ${(agentResult.classifications ?? []).length} classifications, ` +
+                  `${(agentResult.anomalies ?? []).length} anomalies`);
     } catch (err) {
       console.error('Claude API call failed:', err.message);
       return;
