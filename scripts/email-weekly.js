@@ -2,6 +2,7 @@
 
 const Redis = require('ioredis');
 const { Resend } = require('resend');
+const { logEmail } = require('../lib/email-log.js');
 const { weeklySnapshot } = require('./email-templates.js');
 
 async function main() {
@@ -52,6 +53,7 @@ async function main() {
     });
 
     console.log('Email sent:', result);
+    await logEmail(redis, { type: 'weekly', to: reportEmail, userId: 'owner' });
 
     // ── Multi-user weekly emails ───────────────────────────────────────────
     const credKeys = await redis.keys('waterwise:creds:*');
@@ -81,6 +83,7 @@ async function main() {
           text:    userText,
         });
         console.log('Weekly email sent to', creds.email);
+        await logEmail(redis, { type: 'weekly', to: creds.email, userId: creds.userId });
       } catch (e) {
         console.log('Weekly email failed for', credKey, ':', e.message);
       }

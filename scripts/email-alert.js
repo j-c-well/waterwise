@@ -2,8 +2,10 @@
 
 const { Resend } = require('resend');
 const { tierAlert, spikeAlert } = require('./email-templates.js');
+const { logEmail } = require('../lib/email-log.js');
 
-async function sendAlerts(payload) {
+// redis is optional — passed in from scrape.js for logging; omit in tests
+async function sendAlerts(payload, redis) {
   const resendApiKey = process.env.RESEND_API_KEY;
   const reportEmail  = process.env.REPORT_EMAIL;
 
@@ -21,16 +23,9 @@ async function sendAlerts(payload) {
       : `Heads up — ${Math.round(payload.galsTilNextTier).toLocaleString()} gal from Tier ${payload.currentTier + 1} · WaterWise`;
 
     const { html, text } = tierAlert(payload);
-
-    const result = await resend.emails.send({
-      from:    'onboarding@resend.dev',
-      to:      reportEmail,
-      subject,
-      html,
-      text,
-    });
-
+    const result = await resend.emails.send({ from: 'onboarding@resend.dev', to: reportEmail, subject, html, text });
     console.log('Tier alert sent:', result);
+    await logEmail(redis, { type: 'tier_alert', to: reportEmail, userId: 'owner' });
     return;
   }
 
@@ -38,16 +33,9 @@ async function sendAlerts(payload) {
   if (payload.spikeAlert) {
     const subject = `Unusual water use · ${payload.spikeMultiplier}x your normal · WaterWise`;
     const { html, text } = spikeAlert(payload, payload.waterConsumptionToday, payload.sevenDayAvg);
-
-    const result = await resend.emails.send({
-      from:    'onboarding@resend.dev',
-      to:      reportEmail,
-      subject,
-      html,
-      text,
-    });
-
+    const result = await resend.emails.send({ from: 'onboarding@resend.dev', to: reportEmail, subject, html, text });
     console.log('Spike alert sent:', result);
+    await logEmail(redis, { type: 'spike_alert', to: reportEmail, userId: 'owner' });
     return;
   }
 
@@ -55,11 +43,13 @@ async function sendAlerts(payload) {
 }
 
 // Send tier/spike alerts to a specific email address (for registered users)
-async function sendAlertEmail(payload, toEmail) {
+// redis is optional — passed in from scrape.js for logging
+async function sendAlertEmail(payload, toEmail, redis) {
   const resendApiKey = process.env.RESEND_API_KEY;
   if (!resendApiKey || !toEmail) return;
 
-  const resend = new Resend(resendApiKey);
+  const resend  = new Resend(resendApiKey);
+  const userId  = payload.userId ?? null;
 
   if (payload.tierCrossedToday || payload.approachingTierAlert) {
     const subject = payload.tierCrossedToday
@@ -67,6 +57,7 @@ async function sendAlertEmail(payload, toEmail) {
       : `Heads up — ${Math.round(payload.galsTilNextTier).toLocaleString()} gal from Tier ${payload.currentTier + 1} · WaterWise`;
     const { html, text } = tierAlert(payload);
     await resend.emails.send({ from: 'onboarding@resend.dev', to: toEmail, subject, html, text });
+    await logEmail(redis, { type: 'tier_alert', to: toEmail, userId });
     return;
   }
 
@@ -74,6 +65,7 @@ async function sendAlertEmail(payload, toEmail) {
     const subject = `Unusual water use · ${payload.spikeMultiplier}x your normal · WaterWise`;
     const { html, text } = spikeAlert(payload, payload.waterConsumptionToday, payload.sevenDayAvg);
     await resend.emails.send({ from: 'onboarding@resend.dev', to: toEmail, subject, html, text });
+    await logEmail(redis, { type: 'spike_alert', to: toEmail, userId });
   }
 }
 

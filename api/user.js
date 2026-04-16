@@ -321,6 +321,65 @@ async function handleAnalytics(req, res) {
   });
 }
 
+// ── GET /api/health?key= ──────────────────────────────────────────────────────
+async function handleHealth(req, res) {
+  cors(res);
+  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+
+  const { key } = req.query ?? {};
+  const adminKey = (process.env.ADMIN_KEY || '').trim();
+  if (!key || key !== adminKey) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const ymd = yesterday.toISOString().slice(0, 10);
+
+  // Scrape health
+  const healthRaw = await redis.get(`waterwise:scrape-health:${ymd}`);
+  const health    = healthRaw ? JSON.parse(healthRaw) : null;
+
+  // Email count last 7 days
+  let emailsSentLast7Days = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const items = await redis.llen(`waterwise:email-log:${d.toISOString().slice(0, 10)}`);
+    emailsSentLast7Days += items;
+  }
+
+  // Registered users + stale check
+  const credKeys = await redis.keys('waterwise:creds:*');
+  const staleUsers = [];
+
+  for (const k of credKeys) {
+    const raw = await redis.get(k);
+    if (!raw) continue;
+    let creds;
+    try { creds = JSON.parse(raw); } catch { continue; }
+    const latestRaw   = await redis.get(`waterwise:${creds.userId}:latest`);
+    const latest      = latestRaw ? JSON.parse(latestRaw) : null;
+    const lastScraped = latest?.scrapedAt ?? null;
+    const staleHours  = lastScraped ? Math.round((Date.now() - new Date(lastScraped)) / 3600000) : null;
+    if (staleHours === null || staleHours > 48) {
+      staleUsers.push({ userId: creds.userId, name: creds.name, lastScraped });
+    }
+  }
+
+  const redisKeyCount = await redis.dbsize();
+
+  return res.status(200).json({
+    scrapeHealth: health
+      ? { lastRan: health.ranAt, allSucceeded: health.ownerSuccess && (health.users ?? []).every(u => u.success), users: health.users ?? [] }
+      : null,
+    registeredUsers:     credKeys.length,
+    emailsSentLast7Days,
+    staleUsers,
+    redisKeyCount,
+  });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
@@ -333,6 +392,7 @@ module.exports = async function handler(req, res) {
     if (tail.endsWith('/status'))   return await handleStatus(req, res);
     if (tail.endsWith('/admin'))     return await handleAdmin(req, res);
     if (tail.endsWith('/analytics')) return await handleAnalytics(req, res);
+    if (tail.endsWith('/health'))    return await handleHealth(req, res);
     return res.status(404).json({ error: 'Unknown /api/user/* route' });
   } catch (err) {
     console.error('api/user error:', err);

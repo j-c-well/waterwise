@@ -272,7 +272,7 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
     // Send alerts to this user's email if thresholds are crossed
     if (payload.tierCrossedToday || payload.approachingTierAlert || payload.spikeAlert) {
       try {
-        await sendAlertEmail(payload, email);
+        await sendAlertEmail({ ...payload, userId }, email, redis);
         console.log(`  Alert email sent to ${email}`);
       } catch (e) {
         console.log(`  Alert email failed for ${email}:`, e.message);
@@ -280,10 +280,10 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
     }
 
     console.log(`✓ Scraped ${userId} (${email}): ${soFarThisCycle}G so far this cycle`);
-    return true;
+    return { success: true, soFarThisCycle };
   } catch (err) {
     console.error(`✗ Failed ${userId} (${email}): ${err.message}`);
-    return false;
+    return { success: false, error: err.message };
   } finally {
     if (browser) await browser.close();
   }
@@ -305,6 +305,7 @@ async function scrapeAllUsers(redis, now, snowFields, consumptionDate) {
 
   const { decrypt } = require('../lib/crypto');
   let succeeded = 0;
+  const userResults = [];
 
   for (const key of keys) {
     const credsRaw = await redis.get(key);
@@ -320,22 +321,39 @@ async function scrapeAllUsers(redis, now, snowFields, consumptionDate) {
       password = decrypt(creds.encryptedPassword, creds.iv, creds.authTag);
     } catch (err) {
       console.error(`Multi-user: could not decrypt password for ${creds.userId}:`, err.message);
+      const [lp, dom] = (creds.email ?? '').split('@');
+      userResults.push({ userId: creds.userId, name: creds.name ?? null, email: lp ? `${lp[0]}***@${dom}` : creds.email, success: false, error: 'decrypt failed', soFarThisCycle: null, durationMs: 0 });
       continue;
     }
 
-    const ok = await scrapeUser({
-      email:           creds.email,
+    const startMs = Date.now();
+    const result  = await scrapeUser({
+      email:    creds.email,
       password,
-      userId:          creds.userId,
+      userId:   creds.userId,
       redis,
       now,
       snowFields,
       consumptionDate,
     });
-    if (ok) succeeded++;
+    const durationMs = Date.now() - startMs;
+
+    const [lp, dom] = (creds.email ?? '').split('@');
+    userResults.push({
+      userId:         creds.userId,
+      name:           creds.name ?? null,
+      email:          lp ? `${lp[0]}***@${dom}` : creds.email,
+      success:        result.success,
+      error:          result.error ?? null,
+      soFarThisCycle: result.soFarThisCycle ?? null,
+      durationMs,
+    });
+
+    if (result.success) succeeded++;
   }
 
-  console.log(`Multi-user scrape complete: ${succeeded}/${keys.length} succeeded`);
+  console.log(`Multi-user scrape complete: ${succeeded}/${userResults.length} succeeded`);
+  return userResults;
 }
 
 async function main() {
@@ -651,13 +669,49 @@ async function main() {
 
       const { sendAlerts } = require('./email-alert.js');
       try {
-        await sendAlerts(payload);
+        await sendAlerts(payload, redis);
       } catch (e) {
         console.error('Alert email failed:', e.message);
       }
 
       // ── Multi-user scrape ──────────────────────────────────────────────────
-      await scrapeAllUsers(redis, now, snowFields, consumptionDate);
+      const scrapeUsersStart = Date.now();
+      const userResults      = await scrapeAllUsers(redis, now, snowFields, consumptionDate);
+      const totalDurationMs  = Date.now() - scrapeUsersStart;
+
+      // ── Scrape health record ───────────────────────────────────────────────
+      try {
+        const healthKey = 'waterwise:scrape-health:' + new Date().toISOString().slice(0, 10);
+        await redis.set(healthKey, JSON.stringify({
+          ranAt:        new Date().toISOString(),
+          ownerSuccess: true,
+          users:        userResults,
+          totalDurationMs,
+        }), 'EX', 7776000);
+        console.log('Scrape health record saved →', healthKey);
+      } catch (e) {
+        console.error('Health record save failed (non-fatal):', e.message);
+      }
+
+      // ── Failure alerts ─────────────────────────────────────────────────────
+      const failures = userResults.filter(u => !u.success);
+      if (failures.length && process.env.RESEND_API_KEY && process.env.REPORT_EMAIL) {
+        const { Resend } = require('resend');
+        const resend = new Resend(process.env.RESEND_API_KEY);
+        for (const f of failures) {
+          try {
+            await resend.emails.send({
+              from:    'onboarding@resend.dev',
+              to:      process.env.REPORT_EMAIL,
+              subject: `⚠️ WaterWise scrape failed for ${f.name ?? f.userId}`,
+              text:    `userId: ${f.userId}\nemail: ${f.email}\nerror: ${f.error ?? 'unknown'}\ntime: ${new Date().toISOString()}`,
+            });
+            console.log(`Failure alert sent for ${f.userId}`);
+          } catch (e) {
+            console.error('Failure alert send error:', e.message);
+          }
+        }
+      }
 
       await redis.quit();
     } else {
