@@ -92,6 +92,38 @@ function parseNumber(str) {
   return isNaN(n) ? null : n;
 }
 
+// ── Interval timestamp validation ────────────────────────────────────────────
+// Parses the Microsoft /Date(ms)/ format used by Metron.
+function parseMsDate(val) {
+  if (!val) return null;
+  const m = String(val).match(/\/Date\((-?\d+)\)\//);
+  if (m) return new Date(parseInt(m[1], 10));
+  const d = new Date(val);
+  return isNaN(d) ? null : d;
+}
+
+// Extract a representative timestamp from the first or last row of captured interval data.
+function sampleIntervalDate(data) {
+  const rows = Array.isArray(data) ? data
+             : Array.isArray(data?.data) ? data.data
+             : Array.isArray(data?.Data) ? data.Data
+             : (() => { for (const v of Object.values(data ?? {})) if (Array.isArray(v) && v.length) return v; return []; })();
+  if (!rows.length) return null;
+  const row = rows[0];
+  const raw = row.ConsumptionChartDate ?? row.consumptionChartDate ??
+              row.StartTime ?? row.startTime ?? row.Timestamp ?? row.timestamp ?? null;
+  return parseMsDate(raw);
+}
+
+// Returns true if the sampled date falls within the expected YYYY-MM-DD date.
+// Uses UTC date comparison because Metron stores local Mountain time as UTC.
+function intervalDateMatches(data, expectedDate) {
+  const sampled = sampleIntervalDate(data);
+  if (!sampled) return true; // can't validate — allow through
+  const sampledDate = sampled.toISOString().slice(0, 10);
+  return sampledDate === expectedDate;
+}
+
 // ── Multi-user helpers ────────────────────────────────────────────────────────
 
 function runCorrectionsForUser(date, userId) {
@@ -248,11 +280,18 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
       ...snowFields,
     };
 
-    // Save interval data
+    // Save interval data (with date validation)
+    let intervalsValid = false;
     if (capturedIntervals.data) {
-      const intervalKey = `waterwise:${userId}:intervals:${consumptionDate}`;
-      await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 7776000);
-      console.log(`  Intervals saved → ${intervalKey}`);
+      if (intervalDateMatches(capturedIntervals.data, consumptionDate)) {
+        const intervalKey = `waterwise:${userId}:intervals:${consumptionDate}`;
+        await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 7776000);
+        console.log(`  Intervals saved → ${intervalKey}`);
+        intervalsValid = true;
+      } else {
+        const got = sampleIntervalDate(capturedIntervals.data)?.toISOString().slice(0, 10) ?? 'unknown';
+        console.warn(`  WARNING: Interval data date mismatch — expected ${consumptionDate}, got ${got}. Skipping save.`);
+      }
     }
 
     // Save latest + dated snapshot
@@ -262,7 +301,7 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
     ]);
 
     // Run corrections
-    if (capturedIntervals.data) {
+    if (intervalsValid) {
       const { code, lines } = await runCorrectionsForUser(consumptionDate, userId);
       const summary = lines.find(l => /Rule 6|correctedFixtures|complete/.test(l)) ?? '';
       if (code !== 0) console.error(`  Corrections failed (exit ${code}):`, lines.slice(-3).join(' | '));
@@ -645,13 +684,18 @@ async function main() {
       // Save interval data captured passively from the dashboard's own AJAX calls
       try {
         if (capturedIntervals.data) {
-          const intervalKey = `waterwise:intervals:${consumptionDate}`;
-          await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 7776000);
-          console.log('Interval data saved to', intervalKey, '(from:', capturedIntervals.url + ')');
-          const sample = Array.isArray(capturedIntervals.data)
-            ? capturedIntervals.data.slice(0, 2)
-            : capturedIntervals.data;
-          console.log('Interval sample:', JSON.stringify(sample));
+          if (intervalDateMatches(capturedIntervals.data, consumptionDate)) {
+            const intervalKey = `waterwise:intervals:${consumptionDate}`;
+            await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 7776000);
+            console.log('Interval data saved to', intervalKey, '(from:', capturedIntervals.url + ')');
+            const sample = Array.isArray(capturedIntervals.data)
+              ? capturedIntervals.data.slice(0, 2)
+              : capturedIntervals.data;
+            console.log('Interval sample:', JSON.stringify(sample));
+          } else {
+            const got = sampleIntervalDate(capturedIntervals.data)?.toISOString().slice(0, 10) ?? 'unknown';
+            console.warn(`WARNING: Interval data date mismatch — expected ${consumptionDate}, got ${got}. Skipping save.`);
+          }
         } else {
           console.warn('No interval data was captured from dashboard XHR calls');
           // Log what we DID see for diagnosis
