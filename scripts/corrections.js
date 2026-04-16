@@ -865,7 +865,24 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('CORRECTIONS FAILED:', err.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('CORRECTIONS FAILED:', err.message);
+    process.exit(1);
+  });
+}
+
+// Export pure rule functions for unit testing (no Redis dependency)
+module.exports = {
+  applyDishwasherDetection,
+  applyDishwasherWindowScan,
+  inDishwasherWindow,
+  applyToiletSplit,
+  applyShowerReclassification,
+  applyBidetDetection,
+  applyWashingMachineReclassification,
+  applyBathDetection,
+  buildCorrectedFixtures,
+  extractIntervals,
+  CATEGORY_TO_CLS,
+};

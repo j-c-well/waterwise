@@ -3,7 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "vercel-build": "node -e \"require('chrome-aws-lambda')\""
+    "vercel-build": "node -e \"require('chrome-aws-lambda')\"",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:corrections": "jest tests/corrections.test.js"
+  },
+  "jest": {
+    "testMatch": ["**/tests/**/*.test.js"],
+    "testEnvironment": "node"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.86.1",
@@ -12,5 +19,8 @@
     "playwright": "^1.44.0",
     "puppeteer-core": "10.4.0",
     "resend": "^6.10.0"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
   }
 }
