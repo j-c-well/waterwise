@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 8 * * *'   # 2am MT (UTC-6 MDT)
   workflow_dispatch:       # allow manual trigger
+    inputs:
+      trigger:
+        description: 'Trigger source (scheduled | manual | registration)'
+        required: false
+        default: 'manual'
 
 jobs:
   scrape:
@@ -31,6 +36,7 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           REPORT_EMAIL: ${{ secrets.REPORT_EMAIL }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          TRIGGER: ${{ github.event.inputs.trigger || 'scheduled' }}
         run: node scripts/scrape.js
 
       - name: Run corrections

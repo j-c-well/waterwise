@@ -357,7 +357,11 @@ async function scrapeAllUsers(redis, now, snowFields, consumptionDate) {
 }
 
 async function main() {
-  console.log('Scraper starting:', new Date().toISOString());
+  const trigger = process.argv.includes('--manual')       ? 'manual'
+                : process.argv.includes('--registration') ? 'registration'
+                : (process.env.TRIGGER || 'scheduled');
+
+  console.log('Scraper starting:', new Date().toISOString(), `(trigger: ${trigger})`);
   const hour = new Date().getUTCHours(); // Metron stores local MT as UTC
   if (hour >= 6 && hour <= 22) {
     console.log('WARNING: Manual scrape during active hours — interval data may contain partial readings');
@@ -679,7 +683,7 @@ async function main() {
       const userResults      = await scrapeAllUsers(redis, now, snowFields, consumptionDate);
       const totalDurationMs  = Date.now() - scrapeUsersStart;
 
-      // ── Scrape health record ───────────────────────────────────────────────
+      // ── Scrape health record (daily key) ──────────────────────────────────
       try {
         const healthKey = 'waterwise:scrape-health:' + new Date().toISOString().slice(0, 10);
         await redis.set(healthKey, JSON.stringify({
@@ -691,6 +695,24 @@ async function main() {
         console.log('Scrape health record saved →', healthKey);
       } catch (e) {
         console.error('Health record save failed (non-fatal):', e.message);
+      }
+
+      // ── Scrape log (rolling list, last 30 runs) ────────────────────────────
+      try {
+        const succeeded = userResults.filter(u => u.success).length;
+        await redis.lpush('waterwise:scrape-log', JSON.stringify({
+          ranAt:          new Date().toISOString(),
+          trigger,
+          users:          userResults,
+          totalUsers:     userResults.length,
+          succeeded,
+          failed:         userResults.length - succeeded,
+          totalDurationMs,
+        }));
+        await redis.ltrim('waterwise:scrape-log', 0, 29);
+        console.log('Scrape log updated (last 30 runs kept)');
+      } catch (e) {
+        console.error('Scrape log write failed (non-fatal):', e.message);
       }
 
       // ── Failure alerts ─────────────────────────────────────────────────────

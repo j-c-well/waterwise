@@ -32,7 +32,7 @@ async function triggerScrape() {
           'Accept': 'application/vnd.github.v3+json',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ ref: 'main' }),
+        body: JSON.stringify({ ref: 'main', inputs: { trigger: 'registration' } }),
       }
     );
     if (response.ok) console.log('Scrape triggered for new user');
@@ -369,6 +369,13 @@ async function handleHealth(req, res) {
 
   const redisKeyCount = await redis.dbsize();
 
+  // Rolling logs for admin dashboard
+  const scrapeLogRaw = await redis.lrange('waterwise:scrape-log', 0, 29);
+  const scrapeLog    = scrapeLogRaw.map(r => { try { return JSON.parse(r); } catch { return null; } }).filter(Boolean);
+
+  const emailLogRaw  = await redis.lrange('waterwise:email-log', 0, 99);
+  const emailLog     = emailLogRaw.map(r => { try { return JSON.parse(r); } catch { return null; } }).filter(Boolean);
+
   return res.status(200).json({
     scrapeHealth: health
       ? { lastRan: health.ranAt, allSucceeded: health.ownerSuccess && (health.users ?? []).every(u => u.success), users: health.users ?? [] }
@@ -377,6 +384,8 @@ async function handleHealth(req, res) {
     emailsSentLast7Days,
     staleUsers,
     redisKeyCount,
+    scrapeLog,
+    emailLog,
   });
 }
 

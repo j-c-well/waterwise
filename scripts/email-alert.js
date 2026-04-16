@@ -25,7 +25,7 @@ async function sendAlerts(payload, redis) {
     const { html, text } = tierAlert(payload);
     const result = await resend.emails.send({ from: 'onboarding@resend.dev', to: reportEmail, subject, html, text });
     console.log('Tier alert sent:', result);
-    await logEmail(redis, { type: 'tier_alert', to: reportEmail, userId: 'owner' });
+    await logEmail(redis, { type: 'tier_alert', to: reportEmail, userId: 'owner', subject });
     return;
   }
 
@@ -35,7 +35,7 @@ async function sendAlerts(payload, redis) {
     const { html, text } = spikeAlert(payload, payload.waterConsumptionToday, payload.sevenDayAvg);
     const result = await resend.emails.send({ from: 'onboarding@resend.dev', to: reportEmail, subject, html, text });
     console.log('Spike alert sent:', result);
-    await logEmail(redis, { type: 'spike_alert', to: reportEmail, userId: 'owner' });
+    await logEmail(redis, { type: 'spike_alert', to: reportEmail, userId: 'owner', subject });
     return;
   }
 
@@ -57,7 +57,7 @@ async function sendAlertEmail(payload, toEmail, redis) {
       : `Heads up — ${Math.round(payload.galsTilNextTier).toLocaleString()} gal from Tier ${payload.currentTier + 1} · WaterWise`;
     const { html, text } = tierAlert(payload);
     await resend.emails.send({ from: 'onboarding@resend.dev', to: toEmail, subject, html, text });
-    await logEmail(redis, { type: 'tier_alert', to: toEmail, userId });
+    await logEmail(redis, { type: 'tier_alert', to: toEmail, userId, subject });
     return;
   }
 
@@ -65,7 +65,7 @@ async function sendAlertEmail(payload, toEmail, redis) {
     const subject = `Unusual water use · ${payload.spikeMultiplier}x your normal · WaterWise`;
     const { html, text } = spikeAlert(payload, payload.waterConsumptionToday, payload.sevenDayAvg);
     await resend.emails.send({ from: 'onboarding@resend.dev', to: toEmail, subject, html, text });
-    await logEmail(redis, { type: 'spike_alert', to: toEmail, userId });
+    await logEmail(redis, { type: 'spike_alert', to: toEmail, userId, subject });
   }
 }
 

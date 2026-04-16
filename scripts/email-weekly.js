@@ -53,7 +53,7 @@ async function main() {
     });
 
     console.log('Email sent:', result);
-    await logEmail(redis, { type: 'weekly', to: reportEmail, userId: 'owner' });
+    await logEmail(redis, { type: 'weekly', to: reportEmail, userId: 'owner', subject });
 
     // ── Multi-user weekly emails ───────────────────────────────────────────
     const credKeys = await redis.keys('waterwise:creds:*');
@@ -83,7 +83,7 @@ async function main() {
           text:    userText,
         });
         console.log('Weekly email sent to', creds.email);
-        await logEmail(redis, { type: 'weekly', to: creds.email, userId: creds.userId });
+        await logEmail(redis, { type: 'weekly', to: creds.email, userId: creds.userId, subject: userSubject });
       } catch (e) {
         console.log('Weekly email failed for', credKey, ':', e.message);
       }
