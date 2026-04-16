@@ -188,8 +188,10 @@ function dishwasherThresholds(profile) {
 // ── correction rules ──────────────────────────────────────────────────────────
 
 // Rule 1: sustained OTHER/UNKNOWN bursts → dishwasher
-// Thresholds sourced from confirmed household appliance profile when available.
+// Disabled in practice — too many false positives.
+// Only fires when profile.dishwasher.confirmed === true.
 function applyRule1(intervals, profile) {
+  if (!profile?.dishwasher?.confirmed) return 0;
   const thresh = dishwasherThresholds(profile);
   let count = 0;
   const candidates = intervals
@@ -226,42 +228,60 @@ function applyRule1(intervals, profile) {
   return count;
 }
 
-// Rule 2: event-log match → reclassify nearest cluster
-// Compares TIME-OF-DAY only (UTC hours+minutes) to avoid date-offset issues
-// between the event log (local-time ISO strings) and Metron timestamps (local-as-UTC).
-// Asymmetric window: lookback covers pre-wash phase; forward covers full cycle duration.
-function applyRule2(intervals, eventLog, profile) {
-  const thresh = dishwasherThresholds(profile);
-  let count = 0;
-  const dishEvents = (eventLog ?? []).filter(e =>
-    String(e.appliance ?? '').toLowerCase().includes('dishwasher')
-  );
+// Rule 2: Dishwasher window scan → DISHWASHER
+// Only fires when profile.dishwasher.confirmed === true.
+// Scans the configured runWindow (default 6pm–6am) for OTHER clusters ≥ 2.5G,
+// ≥ 45 min span, no internal gap > 5 min.
+function inDishwasherWindow(time, runWindow) {
+  const [startH, startM] = (runWindow?.start ?? '18:00').split(':').map(Number);
+  const [endH,   endM]   = (runWindow?.end   ?? '06:00').split(':').map(Number);
+  const todMin   = time.getUTCHours() * 60 + time.getUTCMinutes();
+  const startMin = startH * 60 + startM;
+  const endMin   = endH   * 60 + endM;
+  if (startMin > endMin) return todMin >= startMin || todMin < endMin;
+  return todMin >= startMin && todMin < endMin;
+}
 
-  for (const evt of dishEvents) {
-    const evtTime = evt.startTime ? new Date(evt.startTime) : null;
-    if (!evtTime || isNaN(evtTime)) continue;
+function applyRule2(intervals, profile) {
+  if (!profile?.dishwasher?.confirmed) return 0;
 
-    // Time-of-day in minutes (0–1439), read as UTC to match Metron's local-as-UTC storage
-    const evtTodMin = evtTime.getUTCHours() * 60 + evtTime.getUTCMinutes();
-    const winStart  = evtTodMin - thresh.lookback;
-    const winEnd    = evtTodMin + thresh.forward;
+  const thresh    = dishwasherThresholds(profile);
+  const runWindow = profile.dishwasher.runWindow ?? null;
 
-    let matched = 0;
-    for (let i = 0; i < intervals.length; i++) {
-      const iv = intervals[i];
-      if (!iv.time) continue;
-      const ivTodMin = iv.time.getUTCHours() * 60 + iv.time.getUTCMinutes();
-      if (ivTodMin >= winStart && ivTodMin <= winEnd) {
-        // Only reclassify unconfidently-classified intervals — don't override SHOWER, TOILET, etc.
-        if (iv.classification !== 'OTHER' && iv.classification !== 'SINK') continue;
-        intervals[i] = { ...iv, classification: 'DISHWASHER', correctedBy: 'rule2', correctionRule: 'event-log-match', confidence: 'high' };
-        matched++;
-      }
+  const candidates = intervals
+    .map((iv, i) => ({ iv, i }))
+    .filter(({ iv }) => {
+      if (iv.classification !== 'OTHER' && iv.classification !== 'UNKNOWN') return false;
+      if (!iv.time) return false;
+      return inDishwasherWindow(iv.time, runWindow);
+    });
+
+  if (!candidates.length) return 0;
+
+  const groups = [];
+  let cur = [candidates[0]];
+  for (let k = 1; k < candidates.length; k++) {
+    if (gapMs(candidates[k - 1].iv, candidates[k].iv) <= 5 * MIN_MS) {
+      cur.push(candidates[k]);
+    } else {
+      groups.push(cur);
+      cur = [candidates[k]];
     }
-    count += matched;
-    console.log(`Rule 2 (${thresh.label}): matched ${matched} intervals` +
-      ` (window ${Math.floor(winStart/60)}:${String(winStart%60).padStart(2,'0')}` +
-      `–${Math.floor(winEnd/60)}:${String(winEnd%60).padStart(2,'0')})`);
+  }
+  groups.push(cur);
+
+  let count = 0;
+  for (const grp of groups) {
+    const totalVol = grp.reduce((s, c) => s + c.iv.volume, 0);
+    const spanMin  = spanMs(grp.map(c => c.iv)) / MIN_MS;
+
+    if (totalVol < 2.0 || spanMin < 30) continue;
+    if (totalVol < thresh.totalMin || spanMin < 45) continue;
+
+    for (const { i } of grp) {
+      intervals[i] = { ...intervals[i], classification: 'DISHWASHER', correctedBy: 'rule2', correctionRule: 'window-scan', confidence: 'high' };
+      count++;
+    }
   }
   return count;
 }
@@ -783,6 +803,109 @@ function shouldKeep(grp) {
   return true;
 }
 
+// ── signature learning ────────────────────────────────────────────────────────
+
+function extractSignature(anomaly, category) {
+  const startHour = (() => {
+    const ts = anomaly.timeStart ?? '';
+    const m  = ts.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    if (!m) return 0;
+    let h = parseInt(m[1]);
+    if (m[3].toUpperCase() === 'PM' && h !== 12) h += 12;
+    if (m[3].toUpperCase() === 'AM' && h === 12) h = 0;
+    return h;
+  })();
+  const timeOfDay =
+    startHour >= 5  && startHour < 12 ? 'morning'   :
+    startHour >= 12 && startHour < 17 ? 'afternoon' :
+    startHour >= 17 && startHour < 22 ? 'evening'   : 'overnight';
+  return {
+    category,
+    timeOfDay,
+    startHour,
+    totalGallons:         anomaly.gallons   ?? 0,
+    durationMin:          anomaly.duration  ?? 0,
+    avgFlowGPM:           (anomaly.duration > 0) ? (anomaly.gallons / anomaly.duration) : 0,
+    metronClassification: anomaly.metronClassification ?? null,
+    confirmedAt:          new Date().toISOString(),
+    confirmedBy:          'user',
+  };
+}
+
+const SIG_CATEGORIES = new Set(['shower', 'bath', 'sink', 'dishwasher', 'laundry']);
+
+// Rule 8: Signature matching — reclassify groups matching user-confirmed flow patterns.
+// Runs async because it reads signatures from Redis.
+const RULE8_CATEGORY_TO_CLS = {
+  shower: 'SHOWER', bath: 'BATH', sink: 'SINK',
+  dishwasher: 'DISHWASHER', laundry: 'WASHING_MACHINE',
+};
+
+async function applyRule8(intervals, userId, redisClient) {
+  const ns     = userId ? `waterwise:${userId}` : 'waterwise';
+  const sigRaw = await redisClient.lrange(`${ns}:signatures`, 0, 49);
+  if (!sigRaw.length) return 0;
+
+  const signatures = sigRaw.map(s => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
+  const usable     = signatures.filter(s => RULE8_CATEGORY_TO_CLS[s.category?.toLowerCase()]);
+  if (!usable.length) return 0;
+
+  const candidateIdxs = intervals
+    .map((iv, i) => ({ iv, i }))
+    .filter(({ iv }) =>
+      iv.classification === 'OTHER' ||
+      iv.classification === 'UNKNOWN' ||
+      iv.classification === 'WASHING_MACHINE'
+    );
+  if (!candidateIdxs.length) return 0;
+
+  const groups = [];
+  let cur = [candidateIdxs[0]];
+  for (let k = 1; k < candidateIdxs.length; k++) {
+    const gap = candidateIdxs[k].iv.time && candidateIdxs[k - 1].iv.time
+      ? candidateIdxs[k].iv.time - candidateIdxs[k - 1].iv.time : Infinity;
+    if (gap <= 5 * MIN_MS) { cur.push(candidateIdxs[k]); }
+    else { groups.push(cur); cur = [candidateIdxs[k]]; }
+  }
+  groups.push(cur);
+
+  let count = 0;
+  for (const grp of groups) {
+    const first = grp[0].iv;
+    const last  = grp[grp.length - 1].iv;
+    if (!first.time || !last.time) continue;
+
+    const durationMin  = (last.time - first.time) / MIN_MS;
+    const totalGallons = grp.reduce((s, c) => s + c.iv.volume, 0);
+    const avgFlowGPM   = durationMin > 0 ? totalGallons / durationMin : totalGallons;
+    const h = first.time.getUTCHours();
+    const timeOfDay =
+      h >= 5 && h < 12 ? 'morning' : h >= 12 && h < 17 ? 'afternoon' :
+      h >= 17 && h < 22 ? 'evening' : 'overnight';
+
+    let bestMatch = null;
+    let bestScore = 0;
+    for (const sig of usable) {
+      let score = 0;
+      if (sig.totalGallons > 0 && Math.abs(totalGallons - sig.totalGallons) / sig.totalGallons <= 0.4) score++;
+      if (sig.durationMin  > 0 && Math.abs(durationMin  - sig.durationMin)  / sig.durationMin  <= 0.4) score++;
+      if (sig.avgFlowGPM   > 0 && Math.abs(avgFlowGPM   - sig.avgFlowGPM)   / sig.avgFlowGPM   <= 0.4) score++;
+      if (timeOfDay === sig.timeOfDay) score++;
+      if (score >= 3 && score > bestScore) { bestScore = score; bestMatch = sig; }
+    }
+
+    if (bestMatch) {
+      const cls        = RULE8_CATEGORY_TO_CLS[bestMatch.category.toLowerCase()];
+      const confidence = bestScore === 4 ? 'high' : 'medium';
+      for (const { i } of grp) {
+        intervals[i] = { ...intervals[i], classification: cls, correctedBy: 'rule8', correctionRule: 'signature-match', confidence };
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
 // ── event confirm handler ─────────────────────────────────────────────────────
 
 async function handleEventConfirm(req, res) {
@@ -822,6 +945,14 @@ async function handleEventConfirm(req, res) {
       confirmedAt: new Date().toISOString(),
     };
     anomalies[idx] = updatedAnomaly;
+
+    // Store flow signature for Rule 8 learning
+    if (category && SIG_CATEGORIES.has(category.toLowerCase())) {
+      const sig    = extractSignature(updatedAnomaly, category.toLowerCase());
+      const sigKey = userId ? `waterwise:${userId}:signatures` : 'waterwise:signatures';
+      await redis.lpush(sigKey, JSON.stringify(sig));
+      await redis.ltrim(sigKey, 0, 49);
+    }
 
     await redis.set(`${ns}:anomalies:${date}`, JSON.stringify(anomalies), 'EX', 7776000);
 
@@ -911,12 +1042,13 @@ module.exports = async function handler(req, res) {
     // Apply corrections (mutate intervals in-place)
     let corrections = 0;
     corrections += applyRule1(intervals, profile);
-    corrections += applyRule2(intervals, eventLog, profile);
+    corrections += applyRule2(intervals, profile);
     corrections += applyRule7(intervals);
     applyRule3(intervals, profile);   // split only — doesn't add to count
     corrections += applyRule4(intervals);
     corrections += applyRule5(intervals, profile);
     corrections += applyRule6(intervals);
+    corrections += await applyRule8(intervals, userId, redis);
 
     // Summary runs on ALL corrected intervals before noise filtering
     const summary = buildSummary(intervals);

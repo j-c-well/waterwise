@@ -157,8 +157,13 @@ function dishwasherThresholds(profile) {
 // ── correction rules ──────────────────────────────────────────────────────────
 
 // Rule 1: Sustained OTHER bursts → DISHWASHER
-// Thresholds sourced from confirmed household appliance profile when available.
+// Disabled in practice — too many false positives. Kept for completeness.
+// Only fires when profile.dishwasher.confirmed === true.
 function applyDishwasherDetection(intervals, profile) {
+  if (!profile?.dishwasher?.confirmed) {
+    console.log('Rule 1: skipped — dishwasher not confirmed in profile');
+    return;
+  }
   const thresh = dishwasherThresholds(profile);
   console.log(`Rule 1: using thresholds for ${thresh.label}`);
   const otherIdxs = new Set();
@@ -202,47 +207,72 @@ function applyDishwasherDetection(intervals, profile) {
   console.log(`Rule 1: reclassified ${otherIdxs.size} intervals → DISHWASHER`);
 }
 
-// Rule 2: Event-log matching → DISHWASHER
-// Uses time-of-day comparison (UTC hours+minutes) to avoid date-offset mismatches.
-// Asymmetric window: lookback covers pre-wash phase; forward covers full cycle duration.
-function applyEventLogMatching(intervals, eventLog, profile) {
-  const thresh = dishwasherThresholds(profile);
+// Rule 2: Dishwasher window scan → DISHWASHER
+// Only fires when profile.dishwasher.confirmed === true.
+// Scans the configured runWindow (default 6pm–6am) for OTHER clusters that match
+// dishwasher thresholds: ≥ 2.5G total, ≥ 45 min span, no internal gap > 5 min.
+// Catches nightly cycles without requiring explicit event-log entries.
+function inDishwasherWindow(time, runWindow) {
+  const [startH, startM] = (runWindow?.start ?? '18:00').split(':').map(Number);
+  const [endH,   endM]   = (runWindow?.end   ?? '06:00').split(':').map(Number);
+  const todMin   = time.getUTCHours() * 60 + time.getUTCMinutes();
+  const startMin = startH * 60 + startM;
+  const endMin   = endH   * 60 + endM;
+  if (startMin > endMin) return todMin >= startMin || todMin < endMin; // spans midnight
+  return todMin >= startMin && todMin < endMin;
+}
 
-  const dishwasherEvents = (eventLog ?? []).filter(e =>
-    String(e.appliance ?? '').toLowerCase().includes('dishwasher')
-  );
-
-  if (!dishwasherEvents.length) return;
-
-  let reclassified = 0;
-
-  for (const evt of dishwasherEvents) {
-    const evtTime = evt.startTime ? new Date(evt.startTime) : null;
-    if (!evtTime || isNaN(evtTime)) continue;
-
-    const evtTodMin = evtTime.getUTCHours() * 60 + evtTime.getUTCMinutes();
-    const winStart  = evtTodMin - thresh.lookback;
-    const winEnd    = evtTodMin + thresh.forward;
-
-    let count = 0;
-    for (let i = 0; i < intervals.length; i++) {
-      const iv = intervals[i];
-      if (!iv.time) continue;
-      const ivTodMin = iv.time.getUTCHours() * 60 + iv.time.getUTCMinutes();
-      if (ivTodMin >= winStart && ivTodMin <= winEnd) {
-        // Only reclassify unconfidently-classified intervals — don't override SHOWER, TOILET, etc.
-        if (iv.classification !== 'OTHER' && iv.classification !== 'SINK') continue;
-        intervals[i] = { ...intervals[i], classification: 'DISHWASHER', correctedBy: 'rule2' };
-        count++;
-      }
-    }
-    reclassified += count;
-    console.log(`Rule 2 (${thresh.label}): reclassified ${count} intervals → DISHWASHER` +
-      ` (window ${Math.floor(winStart/60)}:${String(winStart%60).padStart(2,'0')}` +
-      `–${Math.floor(winEnd/60)}:${String(winEnd%60).padStart(2,'0')})`);
+function applyDishwasherWindowScan(intervals, profile) {
+  if (!profile?.dishwasher?.confirmed) {
+    console.log('Rule 2: skipped — dishwasher not confirmed in profile');
+    return 0;
   }
 
-  if (!reclassified) console.log('Rule 2: no matching interval clusters found');
+  const thresh    = dishwasherThresholds(profile);
+  const runWindow = profile.dishwasher.runWindow ?? null;
+
+  const candidates = intervals
+    .map((iv, i) => ({ iv, i }))
+    .filter(({ iv }) => {
+      if (iv.classification !== 'OTHER' && iv.classification !== 'UNKNOWN') return false;
+      if (!iv.time) return false;
+      return inDishwasherWindow(iv.time, runWindow);
+    });
+
+  if (!candidates.length) { console.log('Rule 2: no OTHER intervals in dishwasher window'); return 0; }
+
+  // Group with gap ≤ 5 min
+  const groups = [];
+  let cur = [candidates[0]];
+  for (let k = 1; k < candidates.length; k++) {
+    if (gapMs(candidates[k - 1].iv, candidates[k].iv) <= 5 * MIN) {
+      cur.push(candidates[k]);
+    } else {
+      groups.push(cur);
+      cur = [candidates[k]];
+    }
+  }
+  groups.push(cur);
+
+  let count = 0;
+  for (const grp of groups) {
+    const totalVol = grp.reduce((s, c) => s + c.iv.volume, 0);
+    const spanMin  = clusterDurationMs(grp.map(c => c.iv)) / MIN;
+
+    // Sanity floor
+    if (totalVol < 2.0 || spanMin < 30) continue;
+    // Full threshold
+    if (totalVol < thresh.totalMin || spanMin < 45) continue;
+
+    for (const { i } of grp) {
+      intervals[i] = { ...intervals[i], classification: 'DISHWASHER', correctedBy: 'rule2', correctionRule: 'window-scan' };
+      count++;
+    }
+    console.log(`Rule 2 (${thresh.label}): window scan — ${grp.length} intervals, ${Math.round(totalVol * 10) / 10}G, ${Math.round(spanMin)}min → DISHWASHER`);
+  }
+
+  if (!count) console.log('Rule 2: no dishwasher clusters found in window');
+  return count;
 }
 
 // Rule 3: Split TOILET into TOILET_HALF (<0.9G) and TOILET_FULL (≥0.9G)
@@ -522,6 +552,85 @@ function applyBathDetection(intervals) {
   return count;
 }
 
+// Rule 8: Signature matching → reclassify groups matching user-confirmed patterns
+// Reads stored signatures from Redis and reclassifies consecutive OTHER/UNKNOWN/
+// WASHING_MACHINE groups that match a confirmed signature on ≥ 3 of 4 criteria:
+// totalGallons ±40%, durationMin ±40%, avgFlowGPM ±40%, timeOfDay bucket.
+const CATEGORY_TO_CLS = {
+  shower: 'SHOWER', bath: 'BATH', sink: 'SINK',
+  dishwasher: 'DISHWASHER', laundry: 'WASHING_MACHINE',
+};
+
+async function applySignatureMatching(intervals, userId, redis) {
+  const ns     = userId ? `waterwise:${userId}` : 'waterwise';
+  const sigRaw = await redis.lrange(`${ns}:signatures`, 0, 49);
+  if (!sigRaw.length) { console.log('Rule 8: no signatures stored'); return 0; }
+
+  const signatures = sigRaw.map(s => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
+  const usable     = signatures.filter(s => CATEGORY_TO_CLS[s.category?.toLowerCase()]);
+  if (!usable.length) return 0;
+
+  const candidateIdxs = intervals
+    .map((iv, i) => ({ iv, i }))
+    .filter(({ iv }) =>
+      iv.classification === 'OTHER' ||
+      iv.classification === 'UNKNOWN' ||
+      iv.classification === 'WASHING_MACHINE'
+    );
+
+  if (!candidateIdxs.length) return 0;
+
+  const groups = [];
+  let cur = [candidateIdxs[0]];
+  for (let k = 1; k < candidateIdxs.length; k++) {
+    const gap = candidateIdxs[k].iv.time && candidateIdxs[k - 1].iv.time
+      ? candidateIdxs[k].iv.time - candidateIdxs[k - 1].iv.time : Infinity;
+    if (gap <= 5 * MIN) { cur.push(candidateIdxs[k]); }
+    else { groups.push(cur); cur = [candidateIdxs[k]]; }
+  }
+  groups.push(cur);
+
+  let count = 0;
+  for (const grp of groups) {
+    const first = grp[0].iv;
+    const last  = grp[grp.length - 1].iv;
+    if (!first.time || !last.time) continue;
+
+    const durationMin  = (last.time - first.time) / MIN;
+    const totalGallons = grp.reduce((s, c) => s + c.iv.volume, 0);
+    const avgFlowGPM   = durationMin > 0 ? totalGallons / durationMin : totalGallons;
+    const h = first.time.getUTCHours();
+    const timeOfDay =
+      h >= 5 && h < 12 ? 'morning' : h >= 12 && h < 17 ? 'afternoon' :
+      h >= 17 && h < 22 ? 'evening' : 'overnight';
+
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const sig of usable) {
+      let score = 0;
+      if (sig.totalGallons > 0 && Math.abs(totalGallons - sig.totalGallons) / sig.totalGallons <= 0.4) score++;
+      if (sig.durationMin  > 0 && Math.abs(durationMin  - sig.durationMin)  / sig.durationMin  <= 0.4) score++;
+      if (sig.avgFlowGPM   > 0 && Math.abs(avgFlowGPM   - sig.avgFlowGPM)   / sig.avgFlowGPM   <= 0.4) score++;
+      if (timeOfDay === sig.timeOfDay) score++;
+      if (score >= 3 && score > bestScore) { bestScore = score; bestMatch = sig; }
+    }
+
+    if (bestMatch) {
+      const cls        = CATEGORY_TO_CLS[bestMatch.category.toLowerCase()];
+      const confidence = bestScore === 4 ? 'high' : 'medium';
+      for (const { i } of grp) {
+        intervals[i] = { ...intervals[i], classification: cls, correctedBy: 'rule8', correctionRule: 'signature-match', confidence };
+        count++;
+      }
+      console.log(`Rule 8: signature match — ${grp.length} intervals → ${cls} (confidence: ${confidence}, score: ${bestScore}/4)`);
+    }
+  }
+
+  if (!count) console.log('Rule 8: no signature matches found');
+  return count;
+}
+
 // ── fixture summary ───────────────────────────────────────────────────────────
 
 function buildCorrectedFixtures(intervals) {
@@ -691,12 +800,13 @@ async function main() {
 
     // ── apply rules (mutates intervals array) ──
     applyDishwasherDetection(intervals, profile);
-    applyEventLogMatching(intervals, eventLog, profile);
+    applyDishwasherWindowScan(intervals, profile);
     applyWashingMachineReclassification(intervals);
     applyToiletSplit(intervals);
     applyShowerReclassification(intervals);
     applyBidetDetection(intervals, profile);
     applyBathDetection(intervals);
+    await applySignatureMatching(intervals, userId, redis);
 
     const after = {};
     for (const iv of intervals) after[iv.classification] = (after[iv.classification] ?? 0) + 1;

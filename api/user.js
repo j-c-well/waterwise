@@ -168,6 +168,16 @@ async function handleData(req, res) {
     fixturesSource = 'metron';
   }
 
+  const signaturesRaw = await redis.lrange(
+    userId ? `waterwise:${userId}:signatures` : 'waterwise:signatures',
+    0, 49
+  );
+  const signatures = signaturesRaw
+    .map(s => { try { return JSON.parse(s); } catch { return null; } })
+    .filter(Boolean)
+    .map(({ category, timeOfDay, totalGallons, durationMin, confirmedAt, confirmedBy }) =>
+      ({ category, timeOfDay, totalGallons, durationMin, confirmedAt, confirmedBy }));
+
   logEvent(redis, { event: 'dashboard_load', userId: userId || 'owner' }, req);
   res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
   return res.status(200).json({
@@ -178,6 +188,8 @@ async function handleData(req, res) {
     staleHours,
     householdProfile,
     leakAlert,
+    signatureCount: signatures.length,
+    signatures,
   });
 }
 
