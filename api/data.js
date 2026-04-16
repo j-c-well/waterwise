@@ -13,9 +13,13 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    const { userId } = req.query ?? {};
+    const ns = userId ? `waterwise:${userId}` : 'waterwise';
+    const profileKey = userId ? `waterwise:household:${userId}` : 'waterwise:household:owner';
+
     const [raw, profileRaw] = await Promise.all([
-      redis.get('waterwise:latest'),
-      redis.get('waterwise:household:owner'),
+      redis.get(`${ns}:latest`),
+      redis.get(profileKey),
     ]);
 
     const data = raw ? JSON.parse(raw) : null;
@@ -29,7 +33,7 @@ module.exports = async function handler(req, res) {
 
     // Fetch corrected interval data for this consumption date (available after corrections.js runs)
     const correctedRaw = data.consumptionDate
-      ? await redis.get(`waterwise:corrected:${data.consumptionDate}`)
+      ? await redis.get(`${ns}:corrected:${data.consumptionDate}`)
       : null;
     const corrected = correctedRaw ? JSON.parse(correctedRaw) : null;
 
@@ -74,7 +78,7 @@ module.exports = async function handler(req, res) {
     }
 
     // Anomaly summary
-    const anomalyKey2 = `waterwise:anomalies:${data.consumptionDate}`;
+    const anomalyKey2 = `${ns}:anomalies:${data.consumptionDate}`;
     const anomalyRaw2 = data.consumptionDate ? await redis.get(anomalyKey2) : null;
     const anomalies2  = anomalyRaw2 ? JSON.parse(anomalyRaw2) : [];
     const unconfirmedAnomalies = anomalies2.filter(a => !a.confirmedAt).length;
