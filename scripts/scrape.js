@@ -308,6 +308,18 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
       else console.log(`  Corrections OK — ${summary}`);
     }
 
+    // Run agent classification in parallel (fire and forget — don't block scrape)
+    if (intervalsValid && process.env.ANTHROPIC_API_KEY) {
+      const agentClassify = spawn(
+        process.execPath,
+        [path.join(__dirname, 'agent-classify.js'), consumptionDate, '--userId', userId],
+        { env: process.env, stdio: 'pipe' }
+      );
+      agentClassify.stdout.on('data', d => console.log('  [agent]', d.toString().trim()));
+      agentClassify.stderr.on('data', d => console.log('  [agent err]', d.toString().trim()));
+      console.log('  Agent classification started (background)');
+    }
+
     // Send alerts to this user's email if thresholds are crossed
     if (payload.tierCrossedToday || payload.approachingTierAlert || payload.spikeAlert) {
       try {

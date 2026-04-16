@@ -39,6 +39,7 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           REPORT_EMAIL: ${{ secrets.REPORT_EMAIL }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TRIGGER: ${{ github.event.inputs.trigger || 'scheduled' }}
         run: node scripts/scrape.js
 

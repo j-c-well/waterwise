@@ -1006,7 +1006,7 @@ module.exports = async function handler(req, res) {
 
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  // Parse date and userId params
+  // Parse date, userId, and source params
   let date = req.query?.date;
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     const d = new Date();
@@ -1014,6 +1014,7 @@ module.exports = async function handler(req, res) {
     date = d.toISOString().slice(0, 10);
   }
   const { userId } = req.query ?? {};
+  const source = req.query?.source ?? 'auto'; // 'agent' | 'rules' | 'auto'
   const ns = userId ? `waterwise:${userId}` : 'waterwise';
 
   try {
@@ -1072,14 +1073,51 @@ module.exports = async function handler(req, res) {
 
     const unconfirmedCount = anomaliesWithUrgency.filter(a => !a.confirmedAt).length;
 
+    // Check if agent-classified data is available
+    const agentRaw = await redis.get(`${ns}:agent-classified:${date}`);
+    const agentData = agentRaw ? JSON.parse(agentRaw) : null;
+    const agentAvailable = !!agentData;
+
+    // Determine which events to serve based on ?source=
+    let resolvedEvents        = events;
+    let classificationSource  = 'rules';
+
+    if ((source === 'agent' || source === 'auto') && agentData?.classifications?.length) {
+      // Format agent classifications as timeline events
+      resolvedEvents = agentData.classifications.map(ac => ({
+        timeStart:            ac.timeStart,
+        timeEnd:              ac.timeEnd ?? null,
+        displayTime:          ac.timeEnd && ac.timeStart !== ac.timeEnd
+                                ? `${ac.timeStart}–${ac.timeEnd}` : ac.timeStart,
+        gallons:              ac.gallons,
+        duration:             0, // not tracked by agent
+        classification:       ac.classification,
+        metronClassification: null,
+        corrected:            true,
+        confidence:           ac.confidence >= 0.85 ? 'high' : ac.confidence >= 0.65 ? 'medium' : 'low',
+        correctionRule:       'agent-classification',
+        reasoning:            ac.reasoning ?? null,
+        needsConfirmation:    ac.needsConfirmation ?? false,
+        metronAgreement:      ac.metronAgreement ?? null,
+        intervalCount:        0,
+      }));
+      classificationSource = 'agent';
+    } else if (source === 'agent') {
+      // Agent explicitly requested but no data available
+      return res.status(404).json({ error: 'Agent classification not yet available for this date' });
+    }
+
     const body = {
       date,
       timezone: 'local-as-utc',
-      events,
+      events:               resolvedEvents,
       summary,
       corrections,
-      anomalies: anomaliesWithUrgency,
+      anomalies:            anomaliesWithUrgency,
       unconfirmedCount,
+      classificationSource,
+      agentAvailable,
+      agentInsights:        agentData?.insights ?? [],
     };
 
     // Raw sample in non-prod for debugging Metron field names
