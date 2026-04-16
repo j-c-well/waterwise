@@ -563,13 +563,16 @@ async function main() {
     };
 
     // Compute enriched fields
-    const now = new Date();
-    const yesterday = new Date(now);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const consumptionDate = yesterday.toISOString().split('T')[0];
+    // consumptionDate is always YESTERDAY in MT time — WaterScope data is 1 day behind.
+    // MDT = UTC-6, MST = UTC-7. Using -6 year-round is safe: worst case off by 1hr in winter.
+    const now          = new Date();
+    const MT_OFFSET    = -6; // MDT (UTC-6)
+    const mtNow        = new Date(now.getTime() + MT_OFFSET * 3600000);
+    const mtYesterday  = new Date(mtNow.getTime() - 24 * 3600000);
+    const consumptionDate = mtYesterday.toISOString().slice(0, 10);
     // Patch fixtures date now that consumptionDate is defined
     raw.fixtures.date = consumptionDate;
-    const billingCycleDay = now.getDate();
+    const billingCycleDay = mtNow.getUTCDate();
     const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     const daysRemaining = daysInMonth - billingCycleDay;
     const droughtLevel = 1; // hardcoded — update manually when EMD changes
