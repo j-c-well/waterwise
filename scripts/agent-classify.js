@@ -359,8 +359,11 @@ async function main() {
     // ── Step 1: Normalize + group intervals ─────────────────────────────────
     const intervals = extractIntervals(JSON.parse(intervalsRaw));
     intervals.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
-    const events = groupIntervalsIntoEvents(intervals);
-    console.log(`Grouped ${intervals.length} intervals into ${events.length} events`);
+    const allEvents = groupIntervalsIntoEvents(intervals);
+    // Filter out sub-threshold events to keep prompt and response size manageable.
+    // Events < 0.1G and < 2 min are likely meter artifacts — skip them for classification.
+    const events = allEvents.filter(e => e.totalGallons >= 0.1 || e.durationMin >= 2);
+    console.log(`Grouped ${intervals.length} intervals into ${allEvents.length} events (${events.length} after filtering)`);
 
     // ── Step 2: Build prompt ─────────────────────────────────────────────────
     const dayOfWeek = DAYS[new Date(targetDate + 'T12:00:00Z').getUTCDay()];
@@ -387,11 +390,13 @@ async function main() {
     try {
       const message = await anthropic.messages.create({
         model:      'claude-opus-4-5',
-        max_tokens: 2000,
+        max_tokens: 4096,
         system,
         messages: [{ role: 'user', content: userPrompt }],
       });
-      const text = message.content[0]?.text ?? '';
+      let text = message.content[0]?.text ?? '';
+      // Strip markdown code fences if present (model sometimes ignores "JSON only" instruction)
+      text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
       agentResult = JSON.parse(text);
       console.log(`Agent returned ${(agentResult.classifications ?? []).length} classifications, ` +
                   `${(agentResult.anomalies ?? []).length} anomalies, ` +
