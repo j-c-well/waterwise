@@ -22,24 +22,28 @@ function cors(res, methods = 'GET, OPTIONS') {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 async function triggerScrape() {
-  try {
-    const response = await fetch(
-      'https://api.github.com/repos/j-c-well/waterwise/actions/workflows/scrape.yml/dispatches',
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': 'token ' + process.env.GITHUB_PAT,
-          'Accept': 'application/vnd.github.v3+json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ ref: 'main', inputs: { trigger: 'registration' } }),
-      }
-    );
-    if (response.ok) console.log('Scrape triggered for new user');
-    else console.log('Scrape trigger failed:', response.status);
-  } catch (e) {
-    console.log('Scrape trigger error:', e.message);
-  }
+  // Delay 30s to ensure the Redis creds write has fully committed before
+  // the scrape workflow reads waterwise:creds:* keys.
+  setTimeout(async () => {
+    try {
+      const response = await fetch(
+        'https://api.github.com/repos/j-c-well/waterwise/actions/workflows/scrape.yml/dispatches',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': 'token ' + process.env.GITHUB_PAT,
+            'Accept': 'application/vnd.github.v3+json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ ref: 'main', inputs: { trigger: 'registration' } }),
+        }
+      );
+      if (response.ok) console.log('Scrape triggered for new user');
+      else console.log('Scrape trigger failed:', response.status);
+    } catch (e) {
+      console.log('Scrape trigger error:', e.message);
+    }
+  }, 30000);
 }
 
 // ── POST /api/user/register ───────────────────────────────────────────────────
