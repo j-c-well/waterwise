@@ -91,7 +91,7 @@ async function handleRegister(req, res) {
     userId,
     email:        creds.email,
     name:         creds.name,
-    dashboardUrl: `https://waterwise-six.vercel.app?user=${userId}`,
+    dashboardUrl: `https://water-wise-gauge.lovable.app?user=${userId}`,
   });
 }
 
