@@ -218,12 +218,14 @@ async function handleStatus(req, res) {
     : null;
 
   return res.status(200).json({
-    userId:    creds.userId,
-    email:     creds.email,
-    name:      creds.name,
-    hasData:   !!latest,
+    userId:      creds.userId,
+    email:       creds.email,
+    name:        creds.name,
+    hasData:     !!latest,
     lastScraped,
-    dataStale: staleHours !== null ? staleHours > 25 : null,
+    dataStale:   staleHours !== null ? staleHours > 25 : null,
+    lastError:   creds.lastError   ?? null,
+    lastErrorAt: creds.lastErrorAt ?? null,
   });
 }
 

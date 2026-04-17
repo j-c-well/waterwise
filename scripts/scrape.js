@@ -377,8 +377,33 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
     console.log(`✓ Scraped ${userId} (${email}): ${soFarThisCycle}G so far this cycle`);
     return { success: true, soFarThisCycle };
   } catch (err) {
-    console.error(`✗ Failed ${userId} (${email}): ${err.message}`);
-    return { success: false, error: err.message };
+    // Classify error for better diagnostics and user-facing messaging
+    let errorCode;
+    if (/timeout/i.test(err.message) || /login failed/i.test(err.message) || /navigation/i.test(err.message)) {
+      errorCode = 'login_timeout';
+      console.error(`✗ Failed ${userId} (${email}): LOGIN TIMEOUT — ${err.message}`);
+    } else if (/could not scrape dashboard/i.test(err.message)) {
+      errorCode = 'dashboard_parse_failure';
+      console.error(`✗ Failed ${userId} (${email}): DASHBOARD PARSE FAILURE — ${err.message}`);
+    } else {
+      errorCode = 'unknown_scrape_error';
+      console.error(`✗ Failed ${userId} (${email}): ${err.message}`);
+    }
+
+    // Persist login_timeout so the status API can surface actionable messaging
+    if (errorCode === 'login_timeout') {
+      try {
+        const credsRaw = await redis.get(`waterwise:creds:${userId}`);
+        if (credsRaw) {
+          const creds = JSON.parse(credsRaw);
+          creds.lastError   = 'login_timeout';
+          creds.lastErrorAt = new Date().toISOString();
+          await redis.set(`waterwise:creds:${userId}`, JSON.stringify(creds));
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
+    return { success: false, error: err.message, errorCode };
   } finally {
     if (browser) await browser.close();
   }
