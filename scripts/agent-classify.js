@@ -479,6 +479,27 @@ async function main() {
     }
 
     // ── Step 4: Store results ────────────────────────────────────────────────
+
+    // Enrich classifications with duration + intervalCount before storing.
+    // Agent returns timeStart/timeEnd as "6:31 AM" strings; compute duration
+    // so downstream consumers (shower leaderboard assign flow) see non-zero values.
+    function parseMinutes(timeStr) {
+      if (!timeStr) return null;
+      const [time, period] = timeStr.split(' ');
+      const [h, m] = time.split(':').map(Number);
+      const hours = period === 'PM' && h !== 12 ? h + 12
+        : (period === 'AM' && h === 12 ? 0 : h);
+      return hours * 60 + m;
+    }
+    for (const c of (agentResult.classifications ?? [])) {
+      const startMin = parseMinutes(c.timeStart);
+      const endMin   = parseMinutes(c.timeEnd || c.timeStart);
+      if (startMin !== null && endMin !== null) {
+        c.duration      = Math.max(0, endMin - startMin);
+        c.intervalCount = c.duration; // 1 interval per minute approximation
+      }
+    }
+
     const payload = {
       date:          targetDate,
       classifiedAt:  new Date().toISOString(),
