@@ -220,6 +220,9 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
     const bodyText = await page.evaluate(() => document.body.innerText);
     raw.rawText = bodyText;
 
+    const waterMatch = bodyText.match(/Water Consumption\s*\n\s*([\d.]+)\s*G/i);
+    const waterConsumptionToday = waterMatch ? parseFloat(waterMatch[1]) : null;
+
     const resStart = bodyText.indexOf('Residential Analysis');
     const resEnd   = bodyText.indexOf('Meter Information', resStart);
     const resText  = resStart === -1 ? '' : (resEnd === -1 ? bodyText.slice(resStart) : bodyText.slice(resStart, resEnd));
@@ -263,6 +266,41 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
     else if (currentTier === 2)     nudge = 'in_tier_2';
     else if (galsTilNextTier < 500) nudge = 'approaching';
 
+    // Compare with previous snapshot for tier-crossing and approaching-tier alerts
+    let tierCrossedToday     = false;
+    let approachingTierAlert = false;
+    const prevKey = `waterwise:${userId}:${consumptionDate}`;
+    const prevRaw = await redis.get(prevKey);
+    if (prevRaw) {
+      const prev = JSON.parse(prevRaw);
+      if (prev.currentTier != null && currentTier > prev.currentTier) tierCrossedToday = true;
+      if (prev.galsTilNextTier != null && prev.galsTilNextTier >= 500 && galsTilNextTier < 500) approachingTierAlert = true;
+    }
+
+    // 7-day rolling average of waterConsumptionToday from per-user daily keys
+    const historyVals = [];
+    for (let i = 1; i <= 7; i++) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const hKey  = `waterwise:${userId}:${d.toISOString().slice(0, 10)}`;
+      const hRaw  = await redis.get(hKey);
+      if (hRaw) {
+        const entry = JSON.parse(hRaw);
+        if (entry.waterConsumptionToday > 0) historyVals.push(entry.waterConsumptionToday);
+      }
+    }
+    const sevenDayAvg = historyVals.length > 0
+      ? historyVals.reduce((a, b) => a + b, 0) / historyVals.length
+      : dailyAverage;
+
+    const spikeAlert = waterConsumptionToday != null &&
+      waterConsumptionToday > 200 &&
+      sevenDayAvg > 0 &&
+      waterConsumptionToday > sevenDayAvg * 2;
+    const spikeMultiplier = spikeAlert
+      ? (waterConsumptionToday / sevenDayAvg).toFixed(1)
+      : null;
+
     const payload = {
       lcdRead:            raw.lcdRead ?? null,
       soFarThisCycle,
@@ -274,8 +312,14 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
       billingCycleDay, daysInMonth, daysRemaining, projectedTotal, droughtLevel,
       currentTier, galsTilNextTier, daysUntilTierCross, projectedTier,
       costSoFar, projectedCost, costByTier, nudge,
-      hasIrrigation:       raw.irrigationGallons > 0,
-      fixtures:            raw.fixtures,
+      hasIrrigation:        raw.irrigationGallons > 0,
+      tierCrossedToday,
+      approachingTierAlert,
+      waterConsumptionToday,
+      sevenDayAvg:          Math.round(sevenDayAvg * 10) / 10,
+      spikeAlert,
+      spikeMultiplier,
+      fixtures:             raw.fixtures,
       consumptionDate,
       ...snowFields,
     };
