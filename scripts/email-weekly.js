@@ -3,7 +3,7 @@
 const Redis = require('ioredis');
 const { Resend } = require('resend');
 const { logEmail } = require('../lib/email-log.js');
-const { weeklySnapshot } = require('./email-templates.js');
+const { weeklySnapshot, subjectLine } = require('./email-templates.js');
 
 async function main() {
   const redisUrl      = process.env.REDIS_URL;
@@ -18,31 +18,13 @@ async function main() {
   const resend = new Resend(resendApiKey);
 
   try {
-    // Read current data
+    // ── Owner email ────────────────────────────────────────────────────────
     const latestRaw = await redis.get('waterwise:latest');
     if (!latestRaw) throw new Error('No data in waterwise:latest — scraper has not run yet');
     const data = JSON.parse(latestRaw);
 
-    // Read last 7 daily keys for history
-    const history = [];
-    for (let i = 1; i <= 7; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const key = `waterwise:${d.toISOString().slice(0, 10)}`;
-      const raw = await redis.get(key);
-      if (raw) history.push(JSON.parse(raw));
-    }
-    history.sort((a, b) => (a.consumptionDate || '').localeCompare(b.consumptionDate || ''));
-
-    const { html, text } = weeklySnapshot(data, history);
-
-    const date         = new Date();
-    const monthName    = date.toLocaleString('en-US', { month: 'long' });
-    const year         = date.getFullYear();
-    const billingCycleDay = data.billingCycleDay ?? date.getDate();
-    const daysInMonth  = data.daysInMonth ?? 30;
-
-    const subject = `WaterWise · ${monthName} ${year} · Day ${billingCycleDay} of ${daysInMonth}`;
+    const { html, text } = weeklySnapshot(data, [], null);
+    const subject = subjectLine(data, 'Joshua');
 
     const result = await resend.emails.send({
       from:    'onboarding@resend.dev',
@@ -52,7 +34,7 @@ async function main() {
       text,
     });
 
-    console.log('Email sent:', result);
+    console.log('Owner email sent:', result);
     await logEmail(redis, { type: 'weekly', to: reportEmail, userId: 'owner', subject });
 
     // ── Multi-user weekly emails ───────────────────────────────────────────
@@ -63,17 +45,20 @@ async function main() {
         if (!creds?.userId || !creds?.email) continue;
 
         const userLatestRaw = await redis.get(`waterwise:${creds.userId}:latest`);
-        if (!userLatestRaw) continue;
+        if (!userLatestRaw) {
+          console.log(`Skipping ${creds.email} — no data yet`);
+          continue;
+        }
         const userData = JSON.parse(userLatestRaw);
 
-        const { html: userHtml, text: userText } = weeklySnapshot(userData, []);
+        // Skip if no meaningful data (prevents sending to users whose scrape failed)
+        if (userData.soFarThisCycle == null) {
+          console.log(`Skipping ${creds.email} — soFarThisCycle is null`);
+          continue;
+        }
 
-        const userDate        = new Date();
-        const userMonthName   = userDate.toLocaleString('en-US', { month: 'long' });
-        const userYear        = userDate.getFullYear();
-        const userBillingDay  = userData.billingCycleDay ?? userDate.getDate();
-        const userDaysInMonth = userData.daysInMonth ?? 30;
-        const userSubject     = `${creds.name}'s WaterWise · ${userMonthName} ${userYear} · Day ${userBillingDay} of ${userDaysInMonth}`;
+        const { html: userHtml, text: userText } = weeklySnapshot(userData, [], creds.userId);
+        const userSubject = subjectLine(userData, creds.name);
 
         await resend.emails.send({
           from:    'onboarding@resend.dev',
@@ -82,7 +67,7 @@ async function main() {
           html:    userHtml,
           text:    userText,
         });
-        console.log('Weekly email sent to', creds.email);
+        console.log(`Weekly email sent to ${creds.email} — "${userSubject}"`);
         await logEmail(redis, { type: 'weekly', to: creds.email, userId: creds.userId, subject: userSubject });
       } catch (e) {
         console.log('Weekly email failed for', credKey, ':', e.message);

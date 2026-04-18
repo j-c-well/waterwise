@@ -8,7 +8,6 @@ const RATES = {
 };
 const TIER_THRESHOLDS = [0, 3800, 7600, 11400, 15200];
 const TIER_LABELS = ['Tier 1', 'Tier 2', 'Tier 3', 'Tier 4', 'Tier 5'];
-const DASHBOARD_URL = 'https://waterwise-six.vercel.app';
 
 function fmt(n, dec = 0) {
   if (n == null) return '—';
@@ -29,6 +28,12 @@ function monthName(date) {
 
 // ─── Shared layout wrapper ─────────────────────────────────────────────────
 
+const LOGO_SVG = `
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block;margin-bottom:10px;">
+  <path d="M18 4C18 4 7 16 7 22a11 11 0 0022 0C29 16 18 4 18 4z" fill="rgba(255,255,255,0.92)"/>
+  <path d="M13 24c0 3.5 2.4 5.5 5 5.5" stroke="rgba(37,99,235,0.45)" stroke-width="1.8" stroke-linecap="round"/>
+</svg>`;
+
 function wrap(accentColor, headerContent, bodyContent) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -40,6 +45,7 @@ function wrap(accentColor, headerContent, bodyContent) {
 
       <!-- Header -->
       <tr><td style="background:${accentColor};border-radius:12px 12px 0 0;padding:28px 32px;">
+        ${LOGO_SVG}
         ${headerContent}
       </td></tr>
 
@@ -51,8 +57,7 @@ function wrap(accentColor, headerContent, bodyContent) {
       <!-- Footer -->
       <tr><td style="padding:16px 0;text-align:center;">
         <p style="margin:0;font-size:11px;color:#94a3b8;">
-          WaterWise · Boulder County water tracking<br>
-          <a href="${DASHBOARD_URL}" style="color:#94a3b8;">Open dashboard</a>
+          WaterWise · Boulder County water tracking
         </p>
       </td></tr>
 
@@ -134,7 +139,12 @@ function snowBar(label, pct) {
 // ─── Contextual tip ────────────────────────────────────────────────────────
 
 function contextualTip(data) {
-  const { nudge, hasIrrigation, snowpackSWEPct } = data;
+  const { nudge, hasIrrigation, spikeAlert } = data;
+  if (spikeAlert) {
+    return hasIrrigation
+      ? 'Check your irrigation controller — a stuck valve can run for hours unnoticed. Walk your yard for pooling water or unusually wet areas.'
+      : 'Check all toilets for running water and look under sinks for slow drips. If no obvious source, read your meter at night vs morning.';
+  }
   if (nudge === 'in_tier_3plus') {
     return hasIrrigation
       ? 'Your irrigation is the biggest lever right now. Consider skipping a cycle or shortening run times — each minute matters in Tier 3.'
@@ -148,25 +158,65 @@ function contextualTip(data) {
   if (nudge === 'approaching') {
     return 'You\'re close to the next tier threshold. A short pause on irrigation or a load of laundry timing shift could keep you in a lower rate.';
   }
-  if (snowpackSWEPct != null && snowpackSWEPct < 50) {
-    return 'Snowpack is well below normal this year — early conservation pays dividends when summer restrictions arrive.';
+  return null; // no tip warranted
+}
+
+// ─── Dynamic subject line ──────────────────────────────────────────────────
+
+function subjectLine(data, name) {
+  const {
+    spikeAlert, nudge, galsTilNextTier, currentTier = 1,
+    soFarThisCycle, billingCycleDay, daysInMonth,
+  } = data;
+  const prefix = name ? `${name} · ` : '';
+  const date   = new Date();
+  const month  = date.toLocaleString('en-US', { month: 'long' });
+
+  if (spikeAlert) {
+    return `${prefix}Something unusual happened with your water yesterday 💧`;
   }
-  return 'You\'re on track. Keep an eye on irrigation startup — it\'s the fastest way to jump tiers in spring.';
+  if (nudge === 'approaching' || nudge === 'in_tier_2' || nudge === 'in_tier_3plus') {
+    return `${prefix}${fmt(galsTilNextTier)} gal from Tier ${currentTier + 1} · act this week`;
+  }
+  return `${prefix}${month} · ${fmt(soFarThisCycle)} gal · Day ${billingCycleDay} of ${daysInMonth}`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. weeklySnapshot
 // ═══════════════════════════════════════════════════════════════════════════
 
-function weeklySnapshot(data) {
+function weeklySnapshot(data, _history, userId) {
   const {
     soFarThisCycle = 0, dailyAverage = 0, costSoFar = 0, projectedCost = 0,
-    billingCycleDay = 1, daysInMonth = 30, currentTier = 1, droughtLevel = 1,
+    billingCycleDay = 1, daysInMonth = 30, daysRemaining = 0,
+    currentTier = 1, droughtLevel = 1,
+    galsTilNextTier = 0, spikeAlert = false, waterConsumptionToday,
+    nudge = 'none',
     snowpackSWEPct, precipPct, snowpackSWE, snowpackSWEMedian,
   } = data;
 
-  const date     = new Date();
-  const header   = `
+  const date    = new Date();
+  const dashUrl = userId
+    ? 'https://water-wise-gauge.lovable.app?user=' + userId
+    : 'https://water-wise-gauge.lovable.app';
+
+  // ── Headline stat ──────────────────────────────────────────────────────
+  let headlineValue, headlineLabel, headlineSub;
+  if (spikeAlert && waterConsumptionToday != null) {
+    headlineValue = fmt(waterConsumptionToday) + ' gal';
+    headlineLabel = 'Yesterday\'s usage';
+    headlineSub   = 'Spike detected';
+  } else if (nudge === 'approaching' || nudge === 'in_tier_2' || nudge === 'in_tier_3plus') {
+    headlineValue = fmt(galsTilNextTier) + ' gal';
+    headlineLabel = `Until Tier ${currentTier + 1}`;
+    headlineSub   = nudge === 'approaching' ? 'Getting close' : `Currently in Tier ${currentTier}`;
+  } else {
+    headlineValue = fmt(soFarThisCycle) + ' gal';
+    headlineLabel = 'Used so far';
+    headlineSub   = `Day ${billingCycleDay} of ${daysInMonth}`;
+  }
+
+  const header = `
     <h1 style="margin:0 0 4px;font-size:22px;font-weight:700;color:#ffffff;letter-spacing:-.3px;">
       WaterWise &middot; ${monthName(date)}
     </h1>
@@ -174,28 +224,50 @@ function weeklySnapshot(data) {
       ${weekLabel(billingCycleDay)} &middot; Day ${billingCycleDay} of ${daysInMonth}
     </p>`;
 
-  const tiers    = [0, 1, 2, 3, 4].map(i => tierRow(i, soFarThisCycle, droughtLevel)).join('');
-  const hasSnow  = snowpackSWEPct != null;
-  const tip      = contextualTip(data);
+  // ── Two-tier display (current + next only) ─────────────────────────────
+  const currTierIdx = currentTier - 1;
+  const nextTierIdx = currentTier < 5 ? currentTier : null;
+  const tiers = tierRow(currTierIdx, soFarThisCycle, droughtLevel)
+    + (nextTierIdx !== null ? tierRow(nextTierIdx, soFarThisCycle, droughtLevel) : '');
+
+  // ── Conditional tip ────────────────────────────────────────────────────
+  const tip = contextualTip(data);
+
+  // ── Snowpack (< 60% only) ──────────────────────────────────────────────
+  const showSnow = snowpackSWEPct != null && snowpackSWEPct < 60;
 
   const body = `
-    <!-- Stat grid -->
+    <!-- Headline stat -->
+    <div style="text-align:center;margin-bottom:24px;padding:20px;background:#f8fafc;border-radius:10px;">
+      <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">${headlineLabel}</div>
+      <div style="font-size:44px;font-weight:800;color:#1e293b;line-height:1;letter-spacing:-.5px;">${headlineValue}</div>
+      <div style="font-size:12px;color:#94a3b8;margin-top:6px;">${headlineSub}</div>
+    </div>
+
+    <!-- Supporting stats -->
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:24px;">
       <tr>
-        ${statCell('Used so far', fmt(soFarThisCycle) + ' gal', `Day ${billingCycleDay}`)}
+        ${statCell('Daily avg', fmt(dailyAverage, 1) + ' gal', 'this cycle')}
         ${statCell('Cost so far', fmtDollar(costSoFar), 'this cycle')}
-        ${statCell('Projected', fmtDollar(projectedCost), 'end of cycle')}
+        ${statCell('Projected', fmtDollar(projectedCost), `${daysRemaining}d remaining`)}
       </tr>
     </table>
 
-    <!-- Tier rows -->
+    <!-- Tier rows (current + next only) -->
     <p style="margin:0 0 8px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#64748b;">Water Tiers</p>
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:24px;">
       ${tiers}
     </table>
 
-    ${hasSnow ? `
-    <!-- Snowpack -->
+    ${tip ? `
+    <!-- Conservation tip (only when nudge triggered) -->
+    <div style="background:#f0f9ff;border-left:3px solid #2563eb;border-radius:0 8px 8px 0;padding:14px 16px;margin-bottom:24px;">
+      <p style="margin:0 0 4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#2563eb;">Conservation tip</p>
+      <p style="margin:0;font-size:13px;color:#1e40af;line-height:1.5;">${tip}</p>
+    </div>` : ''}
+
+    ${showSnow ? `
+    <!-- Snowpack (only when < 60%) -->
     <p style="margin:0 0 8px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#64748b;">Snowpack (Station 936)</p>
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:24px;">
       ${snowBar('Snow Water Equivalent', snowpackSWEPct)}
@@ -207,15 +279,10 @@ function weeklySnapshot(data) {
       </td></tr>
     </table>` : ''}
 
-    <!-- Tip -->
-    <div style="background:#f0f9ff;border-left:3px solid #2563eb;border-radius:0 8px 8px 0;padding:14px 16px;margin-bottom:24px;">
-      <p style="margin:0;font-size:13px;color:#1e40af;line-height:1.5;">${tip}</p>
-    </div>
-
     <!-- CTA -->
     <table width="100%" cellpadding="0" cellspacing="0" border="0">
       <tr><td align="center">
-        <a href="${DASHBOARD_URL}" style="display:inline-block;background:#2563eb;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">
+        <a href="${dashUrl}" style="display:inline-block;background:#2563eb;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">
           View Dashboard
         </a>
       </td></tr>
@@ -227,23 +294,23 @@ function weeklySnapshot(data) {
     `WaterWise · ${monthName(date)}`,
     `${weekLabel(billingCycleDay)} · Day ${billingCycleDay} of ${daysInMonth}`,
     '',
-    `Used so far:    ${fmt(soFarThisCycle)} gal`,
+    `${headlineLabel}: ${headlineValue}`,
+    '',
+    `Daily avg:      ${fmt(dailyAverage, 1)} gal`,
     `Cost so far:    ${fmtDollar(costSoFar)}`,
     `Projected cost: ${fmtDollar(projectedCost)}`,
     '',
-    'Tiers:',
-    ...[0,1,2,3,4].map(i => {
-      const low  = TIER_THRESHOLDS[i];
-      const high = TIER_THRESHOLDS[i+1];
-      const active = soFarThisCycle >= low && (high == null || soFarThisCycle < high);
-      return `  Tier ${i+1}: ${fmt(low)}–${high ? fmt(high) : '∞'} gal${active ? ' ← current' : ''}`;
-    }),
+    'Tiers (current + next):',
+    tierRow(currTierIdx, soFarThisCycle, droughtLevel).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim(),
+    nextTierIdx !== null
+      ? tierRow(nextTierIdx, soFarThisCycle, droughtLevel).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+      : '',
     '',
-    hasSnow ? `Snowpack: ${snowpackSWEPct}% of normal SWE · Precip: ${precipPct}% of normal` : '',
+    tip ? tip : '',
     '',
-    tip,
+    showSnow ? `Snowpack: ${snowpackSWEPct}% of normal SWE · Precip: ${precipPct}% of normal` : '',
     '',
-    `Dashboard: ${DASHBOARD_URL}`,
+    `Dashboard: ${dashUrl}`,
   ].filter(l => l !== undefined).join('\n');
 
   return { html, text };
@@ -253,13 +320,16 @@ function weeklySnapshot(data) {
 // 2. tierAlert
 // ═══════════════════════════════════════════════════════════════════════════
 
-function tierAlert(data) {
+function tierAlert(data, userId) {
   const {
     soFarThisCycle = 0, dailyAverage = 0, galsTilNextTier = 0,
     daysRemaining = 0, daysUntilTierCross, currentTier = 1, droughtLevel = 1,
     hasIrrigation = false,
   } = data;
 
+  const dashUrl       = userId
+    ? 'https://water-wise-gauge.lovable.app?user=' + userId
+    : 'https://water-wise-gauge.lovable.app';
   const rates         = RATES[droughtLevel] || RATES[1];
   const currentRate   = rates[currentTier - 1];
   const nextRate      = rates[currentTier] ?? rates[rates.length - 1];
@@ -322,7 +392,7 @@ function tierAlert(data) {
     <!-- CTA -->
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px;">
       <tr><td align="center">
-        <a href="${DASHBOARD_URL}" style="display:inline-block;background:#d97706;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">
+        <a href="${dashUrl}" style="display:inline-block;background:#d97706;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">
           View Dashboard
         </a>
       </td></tr>
@@ -343,7 +413,7 @@ function tierAlert(data) {
     'Tips:',
     ...tips.map((t, i) => `  ${i + 1}. ${t}`),
     '',
-    `Dashboard: ${DASHBOARD_URL}`,
+    `Dashboard: ${dashUrl}`,
   ].join('\n');
 
   return { html, text };
@@ -353,9 +423,12 @@ function tierAlert(data) {
 // 3. spikeAlert
 // ═══════════════════════════════════════════════════════════════════════════
 
-function spikeAlert(data, consumptionToday, sevenDayAvg) {
-  const { spikeMultiplier = '?', dailyAverage = 0, hasIrrigation = false } = data;
+function spikeAlert(data, consumptionToday, sevenDayAvg, userId) {
+  const { spikeMultiplier = '?', hasIrrigation = false } = data;
   const multiplier = spikeMultiplier || (sevenDayAvg > 0 ? (consumptionToday / sevenDayAvg).toFixed(1) : '?');
+  const dashUrl    = userId
+    ? 'https://water-wise-gauge.lovable.app?user=' + userId
+    : 'https://water-wise-gauge.lovable.app';
 
   const header = `
     <h1 style="margin:0 0 4px;font-size:22px;font-weight:700;color:#ffffff;letter-spacing:-.3px;">
@@ -395,7 +468,7 @@ function spikeAlert(data, consumptionToday, sevenDayAvg) {
 
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px;">
       <tr><td align="center">
-        <a href="${DASHBOARD_URL}" style="display:inline-block;background:#dc2626;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">
+        <a href="${dashUrl}" style="display:inline-block;background:#dc2626;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">
           View Dashboard
         </a>
       </td></tr>
@@ -412,10 +485,10 @@ function spikeAlert(data, consumptionToday, sevenDayAvg) {
     'What to check:',
     ...tips.map((t, i) => `  ${i + 1}. ${t}`),
     '',
-    `Dashboard: ${DASHBOARD_URL}`,
+    `Dashboard: ${dashUrl}`,
   ].join('\n');
 
   return { html, text };
 }
 
-module.exports = { weeklySnapshot, tierAlert, spikeAlert };
+module.exports = { weeklySnapshot, tierAlert, spikeAlert, subjectLine };
