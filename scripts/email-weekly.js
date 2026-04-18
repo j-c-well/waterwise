@@ -18,6 +18,17 @@ async function main() {
   const resend = new Resend(resendApiKey);
 
   try {
+    // ── Dedup guard — prevent duplicate sends on the same day ──────────────
+    const today       = new Date().toISOString().slice(0, 10);
+    const dedupKey    = `waterwise:email-sent:${today}`;
+    const alreadySent = await redis.get(dedupKey);
+    if (alreadySent) {
+      console.log(`Weekly email already sent today (${today}) — skipping.`);
+      return;
+    }
+    await redis.set(dedupKey, '1', 'EX', 90000); // 25-hour TTL
+    console.log(`Dedup key set: ${dedupKey}`);
+
     // ── Owner email ────────────────────────────────────────────────────────
     const latestRaw = await redis.get('waterwise:latest');
     if (!latestRaw) throw new Error('No data in waterwise:latest — scraper has not run yet');
