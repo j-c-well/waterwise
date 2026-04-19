@@ -407,6 +407,92 @@ async function handleHealth(req, res) {
   });
 }
 
+// ── GET /api/user/email-preview?key=&userId=&template=&variant= ───────────────
+async function handleEmailPreview(req, res) {
+  cors(res);
+  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+
+  const { key, userId, template = 'weekly', variant } = req.query ?? {};
+  const adminKey = (process.env.ADMIN_KEY || '').trim();
+  if (!key || key !== adminKey) return res.status(403).json({ error: 'Forbidden' });
+  if (!userId) return res.status(400).json({ error: 'userId required' });
+
+  const MT_OFFSET   = -6;
+  const mtNow       = new Date(Date.now() + MT_OFFSET * 3600000);
+  const mtYesterday = new Date(mtNow.getTime() - 24 * 3600000);
+  const consumptionDate = mtYesterday.toISOString().slice(0, 10);
+
+  const [latestRaw, correctedRaw, showerLogItems, profileRaw, credsRaw] = await Promise.all([
+    redis.get(`waterwise:${userId}:latest`),
+    redis.get(`waterwise:${userId}:corrected:${consumptionDate}`),
+    redis.lrange(`waterwise:shower-log:${userId}`, 0, -1),
+    redis.get(`waterwise:household:${userId}`),
+    redis.get(`waterwise:creds:${userId}`),
+  ]);
+
+  if (!latestRaw) return res.status(404).json({ error: 'No data for user' });
+
+  const base     = JSON.parse(latestRaw);
+  const fixtures = correctedRaw ? JSON.parse(correctedRaw) : null;
+  const profile  = profileRaw ? JSON.parse(profileRaw) : null;
+  const creds    = credsRaw ? JSON.parse(credsRaw) : null;
+  const showerLog = showerLogItems
+    .map(s => { try { return JSON.parse(s); } catch { return null; } })
+    .filter(Boolean);
+
+  let data = { ...base, fixtures, householdProfile: profile };
+
+  // Apply variant overrides
+  if (variant === 'spike') {
+    data = { ...data, spikeAlert: true, waterConsumptionToday: (data.dailyAverage || 0) * 2.5, spikeMultiplier: 2.5 };
+  } else if (variant === 'approaching') {
+    data = { ...data, nudge: 'approaching', galsTilNextTier: 380 };
+  } else if (variant === 'tier2') {
+    data = { ...data, nudge: 'in_tier_2', currentTier: 2, soFarThisCycle: 4200 };
+  } else if (variant === 'tier3') {
+    data = { ...data, nudge: 'in_tier_3plus', currentTier: 3, soFarThisCycle: 8000 };
+  } else if (variant === 'lowsnow') {
+    data = { ...data, snowpackSWEPct: 35, precipPct: 40 };
+  } else if (variant === 'noleaderboard') {
+    data = { ...data, showerLog: [] };
+  } else if (variant === 'leaderboard') {
+    data = { ...data, showerLog };
+  }
+
+  const { weeklySnapshot, tierAlert, spikeAlert: spikeAlertTpl, subjectLine } =
+    require('../scripts/email-templates');
+
+  let html;
+  if (template === 'weekly') {
+    html = weeklySnapshot(data, null, userId);
+  } else if (template === 'tier') {
+    html = tierAlert(data, userId);
+  } else if (template === 'spike') {
+    html = spikeAlertTpl(data, data.waterConsumptionToday, data.sevenDayAvg, userId);
+  } else {
+    return res.status(400).json({ error: `Unknown template: ${template}` });
+  }
+
+  const name    = creds?.name ?? null;
+  const subject = subjectLine(data, name);
+  const text    = html.replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim();
+
+  return res.status(200).json({
+    html,
+    subject,
+    text,
+    variant: variant ?? null,
+    template,
+    dataUsed: {
+      soFarThisCycle:  data.soFarThisCycle,
+      nudge:           data.nudge,
+      spikeAlert:      data.spikeAlert,
+      currentTier:     data.currentTier,
+      snowpackSWEPct:  data.snowpackSWEPct,
+    },
+  });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
@@ -419,7 +505,8 @@ module.exports = async function handler(req, res) {
     if (tail.endsWith('/status'))   return await handleStatus(req, res);
     if (tail.endsWith('/admin'))     return await handleAdmin(req, res);
     if (tail.endsWith('/analytics')) return await handleAnalytics(req, res);
-    if (tail.endsWith('/health'))    return await handleHealth(req, res);
+    if (tail.endsWith('/health'))         return await handleHealth(req, res);
+    if (tail.endsWith('/email-preview'))  return await handleEmailPreview(req, res);
     return res.status(404).json({ error: 'Unknown /api/user/* route' });
   } catch (err) {
     console.error('api/user error:', err);
