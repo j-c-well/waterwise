@@ -460,20 +460,20 @@ async function handleEmailPreview(req, res) {
   const { weeklySnapshot, tierAlert, spikeAlert: spikeAlertTpl, subjectLine } =
     require('../scripts/email-templates');
 
-  let html;
+  let result;
   if (template === 'weekly') {
-    html = weeklySnapshot(data, null, userId);
+    result = weeklySnapshot(data, null, userId);
   } else if (template === 'tier') {
-    html = tierAlert(data, userId);
+    result = tierAlert(data, userId);
   } else if (template === 'spike') {
-    html = spikeAlertTpl(data, data.waterConsumptionToday, data.sevenDayAvg, userId);
+    result = spikeAlertTpl(data, data.waterConsumptionToday, data.sevenDayAvg, userId);
   } else {
     return res.status(400).json({ error: `Unknown template: ${template}` });
   }
 
   const name    = creds?.name ?? null;
   const subject = subjectLine(data, name);
-  const text    = html.replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  const { html, text } = result;
 
   return res.status(200).json({
     html,
