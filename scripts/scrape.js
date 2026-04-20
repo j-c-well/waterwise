@@ -737,7 +737,6 @@ async function main() {
         waterBudgetStatus:  raw.waterBudgetStatus ?? null,
         billingRead:        raw.billingRead ?? null,
         irrigationGallons:  raw.irrigationGallons,
-        rawText:            raw.rawText,
         scrapedAt:          now.toISOString(),
         // Computed
         billingCycleDay,
