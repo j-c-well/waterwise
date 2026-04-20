@@ -422,10 +422,10 @@ async function handleEmailPreview(req, res) {
   const mtYesterday = new Date(mtNow.getTime() - 24 * 3600000);
   const consumptionDate = mtYesterday.toISOString().slice(0, 10);
 
-  const [latestRaw, correctedRaw, showerLogItems, profileRaw, credsRaw] = await Promise.all([
+  const [latestRaw, correctedRaw, showerLogRaw, profileRaw, credsRaw] = await Promise.all([
     redis.get(`waterwise:${userId}:latest`),
     redis.get(`waterwise:${userId}:corrected:${consumptionDate}`),
-    redis.lrange(`waterwise:shower-log:${userId}`, 0, -1),
+    redis.get(`waterwise:shower-log:${userId}`),
     redis.get(`waterwise:household:${userId}`),
     redis.get(`waterwise:creds:${userId}`),
   ]);
@@ -436,9 +436,7 @@ async function handleEmailPreview(req, res) {
   const fixtures = correctedRaw ? JSON.parse(correctedRaw) : null;
   const profile  = profileRaw ? JSON.parse(profileRaw) : null;
   const creds    = credsRaw ? JSON.parse(credsRaw) : null;
-  const showerLog = showerLogItems
-    .map(s => { try { return JSON.parse(s); } catch { return null; } })
-    .filter(Boolean);
+  const showerLog = showerLogRaw ? JSON.parse(showerLogRaw) : [];
 
   let data = { ...base, fixtures, householdProfile: profile };
 
