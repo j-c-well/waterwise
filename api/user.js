@@ -394,6 +394,18 @@ async function handleHealth(req, res) {
   const emailLogRaw  = await redis.lrange('waterwise:email-log', 0, 99);
   const emailLog     = emailLogRaw.map(r => { try { return JSON.parse(r); } catch { return null; } }).filter(Boolean);
 
+  // Email click-through data last 14 days
+  const emailClicks = {};
+  for (let i = 0; i < 14; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const dateStr = d.toISOString().slice(0, 10);
+    const clicks  = await redis.hgetall(`waterwise:email-clicks:${dateStr}`);
+    if (clicks && Object.keys(clicks).length > 0) {
+      emailClicks[dateStr] = Object.keys(clicks);
+    }
+  }
+
   return res.status(200).json({
     scrapeHealth: health
       ? { lastRan: health.ranAt, allSucceeded: health.ownerSuccess && (health.users ?? []).every(u => u.success), users: health.users ?? [] }
@@ -404,7 +416,31 @@ async function handleHealth(req, res) {
     redisKeyCount,
     scrapeLog,
     emailLog,
+    emailClicks,
   });
+}
+
+// ── POST /api/analytics/email-click?userId=&week= ────────────────────────────
+async function handleEmailClick(req, res) {
+  cors(res, 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+
+  const { userId, week } = req.method === 'POST'
+    ? { ...(req.query ?? {}), ...(req.body ?? {}) }
+    : (req.query ?? {});
+
+  if (!userId) return res.status(400).json({ error: 'userId required' });
+
+  const clickWeek = week ?? new Date().toISOString().slice(0, 10);
+  const hashKey   = `waterwise:email-clicks:${clickWeek}`;
+  const countKey  = `waterwise:email-click-count:${userId}`;
+
+  await Promise.all([
+    redis.hset(hashKey, userId, new Date().toISOString()),
+    redis.incr(countKey),
+  ]);
+
+  return res.status(200).json({ ok: true, userId, week: clickWeek });
 }
 
 // ── GET /api/user/email-preview?key=&userId=&template=&variant= ───────────────
@@ -503,6 +539,7 @@ module.exports = async function handler(req, res) {
     if (tail.endsWith('/status'))   return await handleStatus(req, res);
     if (tail.endsWith('/admin'))     return await handleAdmin(req, res);
     if (tail.endsWith('/analytics')) return await handleAnalytics(req, res);
+    if (tail.endsWith('/email-click')) return await handleEmailClick(req, res);
     if (tail.endsWith('/health'))         return await handleHealth(req, res);
     if (tail.endsWith('/email-preview'))  return await handleEmailPreview(req, res);
     return res.status(404).json({ error: 'Unknown /api/user/* route' });

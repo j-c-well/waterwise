@@ -196,8 +196,9 @@ function weeklySnapshot(data, _history, userId) {
   } = data;
 
   const date    = new Date();
+  const week    = new Date().toISOString().slice(0, 10);
   const dashUrl = userId
-    ? 'https://water-wise-gauge.lovable.app?user=' + userId
+    ? 'https://water-wise-gauge.lovable.app?user=' + userId + '&ref=email&week=' + week
     : 'https://water-wise-gauge.lovable.app';
 
   // ── Headline stat ──────────────────────────────────────────────────────
