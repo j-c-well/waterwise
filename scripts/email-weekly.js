@@ -38,7 +38,7 @@ async function main() {
     const subject = subjectLine(data, 'Joshua');
 
     const result = await resend.emails.send({
-      from:    'onboarding@resend.dev',
+      from:    'WaterWise <hello@popsiclelabs.io>',
       to:      reportEmail,
       subject,
       html,
@@ -72,7 +72,7 @@ async function main() {
         const userSubject = subjectLine(userData, creds.name);
 
         await resend.emails.send({
-          from:    'onboarding@resend.dev',
+          from:    'WaterWise <hello@popsiclelabs.io>',
           to:      creds.email,
           subject: userSubject,
           html:    userHtml,
