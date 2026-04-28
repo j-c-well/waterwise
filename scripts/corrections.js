@@ -228,14 +228,16 @@ function applyDishwasherWindowScan(intervals, profile) {
     return 0;
   }
 
-  const thresh    = dishwasherThresholds(profile);
-  const runWindow = profile.dishwasher.runWindow ?? null;
+  const thresh      = dishwasherThresholds(profile);
+  const timeWindows = profile.dishwasher.timeWindows ?? null;
+  const runWindow   = profile.dishwasher.runWindow   ?? null;
 
   const candidates = intervals
     .map((iv, i) => ({ iv, i }))
     .filter(({ iv }) => {
       if (iv.classification !== 'OTHER' && iv.classification !== 'UNKNOWN') return false;
       if (!iv.time) return false;
+      if (timeWindows?.length) return timeWindows.some(w => inDishwasherWindow(iv.time, w));
       return inDishwasherWindow(iv.time, runWindow);
     });
 

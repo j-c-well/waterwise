@@ -142,8 +142,26 @@ function buildPrompt({ date, dayOfWeek, events, profile, signatures, billingCtx,
     if (profile.bidetSeat)   profileLines.push('Has bidet seat: yes');
     if (profile.dishwasher?.confirmed) {
       profileLines.push(`Dishwasher: ${profile.dishwasher.brand ?? ''} ${profile.dishwasher.model ?? ''} (confirmed)`.trim());
-      if (profile.dishwasher.runWindow) {
+      if (profile.dishwasher.timeWindows?.length) {
+        profileLines.push(
+          'Dishwasher time windows: ' +
+          profile.dishwasher.timeWindows.map(w => w.start + '-' + w.end).join(', ') +
+          ' (ONLY classify as dishwasher within these windows)'
+        );
+      } else if (profile.dishwasher.runWindow) {
         profileLines.push(`Dishwasher window: ${profile.dishwasher.runWindow.start}–${profile.dishwasher.runWindow.end}`);
+      }
+      if (profile.dishwasher.typicalGallons && profile.dishwasher.typicalDuration && profile.dishwasher.avgFlowGPM) {
+        profileLines.push(
+          `Dishwasher typical signature: ~${profile.dishwasher.typicalGallons}G over ` +
+          `${profile.dishwasher.typicalDuration} min at ${profile.dishwasher.avgFlowGPM} GPM avg`
+        );
+      }
+      if (profile.dishwasher.cyclesPerDay) {
+        profileLines.push(
+          `Dishwasher max cycles per day: ${profile.dishwasher.cyclesPerDay.max}` +
+          ` (typical: ${profile.dishwasher.cyclesPerDay.typical})`
+        );
       }
     }
     if (profile.showerProfiles) {
