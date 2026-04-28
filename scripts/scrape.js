@@ -329,7 +329,7 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
     if (capturedIntervals.data) {
       if (intervalDateMatches(capturedIntervals.data, consumptionDate)) {
         const intervalKey = `waterwise:${userId}:intervals:${consumptionDate}`;
-        await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 7776000);
+        await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 604800);
         console.log(`  Intervals saved → ${intervalKey}`);
         intervalsValid = true;
       } else {
@@ -341,7 +341,7 @@ async function scrapeUser({ email, password, userId, redis, now, snowFields, con
     // Save latest + dated snapshot
     await Promise.all([
       redis.set(`waterwise:${userId}:latest`, JSON.stringify(payload)),
-      redis.set(`waterwise:${userId}:${consumptionDate}`, JSON.stringify(payload), 'EX', 7776000),
+      redis.set(`waterwise:${userId}:${consumptionDate}`, JSON.stringify(payload), 'EX', 604800),
     ]);
 
     // Run corrections
@@ -769,7 +769,7 @@ async function main() {
         if (capturedIntervals.data) {
           if (intervalDateMatches(capturedIntervals.data, consumptionDate)) {
             const intervalKey = `waterwise:intervals:${consumptionDate}`;
-            await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 7776000);
+            await redis.set(intervalKey, JSON.stringify(capturedIntervals.data), 'EX', 604800);
             console.log('Interval data saved to', intervalKey, '(from:', capturedIntervals.url + ')');
             const sample = Array.isArray(capturedIntervals.data)
               ? capturedIntervals.data.slice(0, 2)
@@ -792,7 +792,7 @@ async function main() {
       console.log('Saving to Redis...');
       await Promise.all([
         redis.set('waterwise:latest', JSON.stringify(payload)),
-        redis.set(dateKey, JSON.stringify(payload), 'EX', 7776000),
+        redis.set(dateKey, JSON.stringify(payload), 'EX', 604800),
       ]);
 
       console.log('SUCCESS: Redis updated', dateKey, 'soFarThisCycle:', payload.soFarThisCycle);
@@ -818,7 +818,7 @@ async function main() {
           ownerSuccess: true,
           users:        userResults,
           totalDurationMs,
-        }), 'EX', 7776000);
+        }), 'EX', 604800);
         console.log('Scrape health record saved →', healthKey);
       } catch (e) {
         console.error('Health record save failed (non-fatal):', e.message);
