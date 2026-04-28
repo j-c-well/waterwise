@@ -28,13 +28,7 @@ function monthName(date) {
 
 // ─── Shared layout wrapper ─────────────────────────────────────────────────
 
-const LOGO_SVG = `
-<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block;margin-bottom:10px;">
-  <path d="M18 4C18 4 7 16 7 22a11 11 0 0022 0C29 16 18 4 18 4z" fill="rgba(255,255,255,0.92)"/>
-  <path d="M13 24c0 3.5 2.4 5.5 5 5.5" stroke="rgba(37,99,235,0.45)" stroke-width="1.8" stroke-linecap="round"/>
-</svg>`;
-
-function wrap(accentColor, headerContent, bodyContent) {
+function wrap(bodyContent, name = '') {
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
@@ -43,10 +37,35 @@ function wrap(accentColor, headerContent, bodyContent) {
   <tr><td align="center">
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;">
 
-      <!-- Header -->
-      <tr><td style="background:${accentColor};border-radius:12px 12px 0 0;padding:28px 32px;">
-        ${LOGO_SVG}
-        ${headerContent}
+      <!-- Branding bar -->
+      <tr><td style="border-radius:12px 12px 0 0;overflow:hidden;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="background-color:#e8f4fd;padding:16px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" style="width:1%;">
+                    <table cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td style="vertical-align:middle;padding-right:10px;">
+                          <img src="https://water-wise-gauge.lovable.app/assets/waterwise-logo-1fBhi01-.png"
+                            width="40" height="40" alt="WaterWise" style="display:block;" />
+                        </td>
+                        <td style="vertical-align:middle;">
+                          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:18px;font-weight:700;color:#1e3a5f;letter-spacing:-0.3px;line-height:1.2;">WaterWise</div>
+                          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:10px;font-weight:600;color:#5a8ab0;letter-spacing:1.5px;text-transform:uppercase;">EVERGREEN, CO</div>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                  ${name ? `<td align="right" style="vertical-align:middle;">
+                    <span style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;color:#5a8ab0;">Hi, ${name} &#x1F44B;</span>
+                  </td>` : ''}
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
       </td></tr>
 
       <!-- Body -->
@@ -185,7 +204,7 @@ function subjectLine(data, name) {
 // 1. weeklySnapshot
 // ═══════════════════════════════════════════════════════════════════════════
 
-function weeklySnapshot(data, _history, userId) {
+function weeklySnapshot(data, _history, userId, name = '') {
   const {
     soFarThisCycle = 0, dailyAverage = 0, costSoFar = 0, projectedCost = 0,
     billingCycleDay = 1, daysInMonth = 30, daysRemaining = 0,
@@ -217,13 +236,6 @@ function weeklySnapshot(data, _history, userId) {
     headlineSub   = `Day ${billingCycleDay} of ${daysInMonth}`;
   }
 
-  const header = `
-    <h1 style="margin:0 0 4px;font-size:22px;font-weight:700;color:#ffffff;letter-spacing:-.3px;">
-      WaterWise &middot; ${monthName(date)}
-    </h1>
-    <p style="margin:0;font-size:14px;color:#bfdbfe;">
-      ${weekLabel(billingCycleDay)} &middot; Day ${billingCycleDay} of ${daysInMonth}
-    </p>`;
 
   // ── Two-tier display (current + next only) ─────────────────────────────
   const currTierIdx = currentTier - 1;
@@ -289,7 +301,7 @@ function weeklySnapshot(data, _history, userId) {
       </td></tr>
     </table>`;
 
-  const html = wrap('#2563eb', header, body);
+  const html = wrap(body, name);
 
   const text = [
     `WaterWise · ${monthName(date)}`,
@@ -321,7 +333,7 @@ function weeklySnapshot(data, _history, userId) {
 // 2. tierAlert
 // ═══════════════════════════════════════════════════════════════════════════
 
-function tierAlert(data, userId) {
+function tierAlert(data, userId, name = '') {
   const {
     soFarThisCycle = 0, dailyAverage = 0, galsTilNextTier = 0,
     daysRemaining = 0, daysUntilTierCross, currentTier = 1, droughtLevel = 1,
@@ -341,13 +353,6 @@ function tierAlert(data, userId) {
   const extraCost     = costAtCurrent + costAtNext - (remaining / 1000) * currentRate;
   const crossDays     = daysUntilTierCross != null ? `${daysUntilTierCross} days` : 'soon';
 
-  const header = `
-    <h1 style="margin:0 0 4px;font-size:22px;font-weight:700;color:#ffffff;letter-spacing:-.3px;">
-      ${fmt(galsTilNextTier)} gal from Tier ${currentTier + 1}
-    </h1>
-    <p style="margin:0;font-size:14px;color:#fecaca;">
-      At current pace, you cross in ${crossDays}
-    </p>`;
 
   const tips = hasIrrigation ? [
     'Cut one irrigation cycle this week — a single zone run is typically 300–600 gal.',
@@ -399,7 +404,7 @@ function tierAlert(data, userId) {
       </td></tr>
     </table>`;
 
-  const html = wrap('#dc2626', header, body);
+  const html = wrap(body, name);
 
   const text = [
     `WATERWISE ALERT: ${fmt(galsTilNextTier)} gal from Tier ${currentTier + 1}`,
@@ -424,20 +429,13 @@ function tierAlert(data, userId) {
 // 3. spikeAlert
 // ═══════════════════════════════════════════════════════════════════════════
 
-function spikeAlert(data, consumptionToday, sevenDayAvg, userId) {
+function spikeAlert(data, consumptionToday, sevenDayAvg, userId, name = '') {
   const { spikeMultiplier = '?', hasIrrigation = false } = data;
   const multiplier = spikeMultiplier || (sevenDayAvg > 0 ? (consumptionToday / sevenDayAvg).toFixed(1) : '?');
   const dashUrl    = userId
     ? 'https://water-wise-gauge.lovable.app?user=' + userId
     : 'https://water-wise-gauge.lovable.app';
 
-  const header = `
-    <h1 style="margin:0 0 4px;font-size:22px;font-weight:700;color:#ffffff;letter-spacing:-.3px;">
-      Unusual water use detected
-    </h1>
-    <p style="margin:0;font-size:14px;color:#fecaca;">
-      ${fmt(consumptionToday)} gal yesterday &mdash; ${multiplier}x your normal
-    </p>`;
 
   const tips = hasIrrigation ? [
     'Check your irrigation controller — a stuck valve can run for hours unnoticed.',
@@ -475,7 +473,7 @@ function spikeAlert(data, consumptionToday, sevenDayAvg, userId) {
       </td></tr>
     </table>`;
 
-  const html = wrap('#dc2626', header, body);
+  const html = wrap(body, name);
 
   const text = [
     `WATERWISE SPIKE ALERT: ${fmt(consumptionToday)} gal yesterday (${multiplier}x normal)`,

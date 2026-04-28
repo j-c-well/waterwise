@@ -34,7 +34,7 @@ async function main() {
     if (!latestRaw) throw new Error('No data in waterwise:latest — scraper has not run yet');
     const data = JSON.parse(latestRaw);
 
-    const { html, text } = weeklySnapshot(data, [], null);
+    const { html, text } = weeklySnapshot(data, [], null, 'Joshua');
     const subject = subjectLine(data, 'Joshua');
 
     const result = await resend.emails.send({
@@ -68,7 +68,7 @@ async function main() {
           continue;
         }
 
-        const { html: userHtml, text: userText } = weeklySnapshot(userData, [], creds.userId);
+        const { html: userHtml, text: userText } = weeklySnapshot(userData, [], creds.userId, creds.name);
         const userSubject = subjectLine(userData, creds.name);
 
         await resend.emails.send({
