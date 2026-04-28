@@ -33,7 +33,7 @@ module.exports = async function handler(req, res) {
       .sort((a, b) => a.date.localeCompare(b.date));
 
     logEvent(redis, { event: 'history_view', userId: userId || 'owner' }, req);
-    res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
+    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate');
     return res.status(200).json(history);
   } catch (err) {
     console.error('History fetch error:', err);
