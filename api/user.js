@@ -443,6 +443,56 @@ async function handleEmailClick(req, res) {
   return res.status(200).json({ ok: true, userId, week: clickWeek });
 }
 
+// ── POST /api/cron/scrape  (called by QStash) ─────────────────────────────────
+async function handleCronScrape(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  const cronSecret = (process.env.CRON_SECRET || '').trim();
+  if (!cronSecret || req.headers['authorization'] !== 'Bearer ' + cronSecret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const response = await fetch(
+      'https://api.github.com/repos/j-c-well/waterwise/actions/workflows/scrape.yml/dispatches',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': 'token ' + process.env.GITHUB_PAT,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ref: 'main', inputs: { trigger: 'scheduled' } }),
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(502).json({ error: 'GitHub dispatch failed', status: response.status, body: text });
+    }
+    console.log('QStash → scrape dispatch triggered');
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('cron/scrape error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+// ── POST /api/cron/email  (called by QStash) ──────────────────────────────────
+async function handleCronEmail(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  const cronSecret = (process.env.CRON_SECRET || '').trim();
+  if (!cronSecret || req.headers['authorization'] !== 'Bearer ' + cronSecret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const { sendWeeklyEmails } = require('../scripts/email-weekly');
+    await sendWeeklyEmails();
+    console.log('QStash → weekly emails sent');
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('cron/email error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
 // ── GET /api/user/email-preview?key=&userId=&template=&variant= ───────────────
 async function handleEmailPreview(req, res) {
   cors(res);
@@ -539,7 +589,9 @@ module.exports = async function handler(req, res) {
     if (tail.endsWith('/status'))   return await handleStatus(req, res);
     if (tail.endsWith('/admin'))     return await handleAdmin(req, res);
     if (tail.endsWith('/analytics')) return await handleAnalytics(req, res);
-    if (tail.endsWith('/email-click')) return await handleEmailClick(req, res);
+    if (tail.endsWith('/email-click'))  return await handleEmailClick(req, res);
+    if (tail.endsWith('/cron/scrape')) return await handleCronScrape(req, res);
+    if (tail.endsWith('/cron/email'))  return await handleCronEmail(req, res);
     if (tail.endsWith('/health'))         return await handleHealth(req, res);
     if (tail.endsWith('/email-preview'))  return await handleEmailPreview(req, res);
     return res.status(404).json({ error: 'Unknown /api/user/* route' });

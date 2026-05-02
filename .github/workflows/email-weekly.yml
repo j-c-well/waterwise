@@ -1,9 +1,7 @@
 name: Weekly Email
 
 on:
-  schedule:
-    - cron: '0 15 * * 6'  # 8am MT Saturday
-  workflow_dispatch:
+  workflow_dispatch:  # triggered by QStash via /api/cron/email or manually
 
 jobs:
   email:

@@ -1,9 +1,7 @@
 name: Scrape WaterScope
 
 on:
-  schedule:
-    - cron: '0 8 * * *'   # 2am MT (UTC-6 MDT)
-  workflow_dispatch:       # allow manual trigger
+  workflow_dispatch:       # triggered by QStash via /api/cron/scrape or manually
     inputs:
       trigger:
         description: 'Trigger source (scheduled | manual | registration)'

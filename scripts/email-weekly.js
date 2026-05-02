@@ -5,7 +5,7 @@ const { Resend } = require('resend');
 const { logEmail } = require('../lib/email-log.js');
 const { weeklySnapshot, subjectLine } = require('./email-templates.js');
 
-async function main() {
+async function sendWeeklyEmails() {
   const redisUrl      = process.env.REDIS_URL;
   const resendApiKey  = process.env.RESEND_API_KEY;
   const reportEmail   = process.env.REPORT_EMAIL;
@@ -91,7 +91,11 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+module.exports = { sendWeeklyEmails };
+
+if (require.main === module) {
+  sendWeeklyEmails().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}

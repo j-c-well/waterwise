@@ -33,6 +33,8 @@
     { "source": "/api/household/event-confirm",       "destination": "/api/household/daily-timeline.js" },
     { "source": "/api/health",                        "destination": "/api/user.js" },
     { "source": "/api/user/email-preview",            "destination": "/api/user.js" },
-    { "source": "/api/analytics/email-click",         "destination": "/api/user.js" }
+    { "source": "/api/analytics/email-click",         "destination": "/api/user.js" },
+    { "source": "/api/cron/scrape",                   "destination": "/api/user.js" },
+    { "source": "/api/cron/email",                    "destination": "/api/user.js" }
   ]
 }
