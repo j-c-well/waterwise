@@ -43,6 +43,7 @@ async function main() {
       subject,
       html,
       text,
+      headers: { 'X-Entity-Ref-ID': 'owner-' + Date.now() },
     });
 
     console.log('Owner email sent:', result);
@@ -77,6 +78,7 @@ async function main() {
           subject: userSubject,
           html:    userHtml,
           text:    userText,
+          headers: { 'X-Entity-Ref-ID': creds.userId + '-' + Date.now() },
         });
         console.log(`Weekly email sent to ${creds.email} — "${userSubject}"`);
         await logEmail(redis, { type: 'weekly', to: creds.email, userId: creds.userId, subject: userSubject });
