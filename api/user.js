@@ -406,6 +406,11 @@ async function handleHealth(req, res) {
     }
   }
 
+  const emailEventsRaw = await redis.lrange('waterwise:email-events', 0, 19);
+  const emailEvents    = emailEventsRaw.map(r => { try { return JSON.parse(r); } catch { return null; } }).filter(Boolean);
+  const emailOpens     = await redis.hgetall('waterwise:email-opens') ?? {};
+  const emailClicksResend = await redis.hgetall('waterwise:email-clicks-resend') ?? {};
+
   return res.status(200).json({
     scrapeHealth: health
       ? { lastRan: health.ranAt, allSucceeded: health.ownerSuccess && (health.users ?? []).every(u => u.success), users: health.users ?? [] }
@@ -417,6 +422,9 @@ async function handleHealth(req, res) {
     scrapeLog,
     emailLog,
     emailClicks,
+    emailEvents,
+    emailOpens,
+    emailClicksResend,
   });
 }
 
@@ -577,6 +585,35 @@ async function handleEmailPreview(req, res) {
   });
 }
 
+// ── POST /api/webhooks/resend  (Resend event webhook) ────────────────────────
+async function handleResendWebhook(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const event = req.body;
+  if (!event?.type || !event?.data) return res.status(400).json({ error: 'Invalid payload' });
+
+  const { type, data } = event;
+  const ts     = new Date().toISOString();
+  const entry  = JSON.stringify({ type, ts, emailId: data.email_id, to: data.to?.[0] });
+  const userId = data.tags?.userId ?? null;
+
+  const ops = [
+    redis.lpush('waterwise:email-events', entry),
+    redis.ltrim('waterwise:email-events', 0, 199),
+  ];
+
+  if (type === 'email.opened' && userId) {
+    ops.push(redis.hset('waterwise:email-opens', userId, ts));
+  }
+  if (type === 'email.clicked' && userId) {
+    ops.push(redis.hset('waterwise:email-clicks-resend', userId, ts));
+  }
+
+  await Promise.all(ops);
+  console.log(`Resend webhook: ${type} for ${data.to?.[0] ?? 'unknown'}`);
+  return res.status(200).json({ ok: true });
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
@@ -593,7 +630,8 @@ module.exports = async function handler(req, res) {
     if (tail.endsWith('/cron/scrape')) return await handleCronScrape(req, res);
     if (tail.endsWith('/cron/email'))  return await handleCronEmail(req, res);
     if (tail.endsWith('/health'))         return await handleHealth(req, res);
-    if (tail.endsWith('/email-preview'))  return await handleEmailPreview(req, res);
+    if (tail.endsWith('/email-preview'))       return await handleEmailPreview(req, res);
+    if (tail.endsWith('/webhooks/resend'))     return await handleResendWebhook(req, res);
     return res.status(404).json({ error: 'Unknown /api/user/* route' });
   } catch (err) {
     console.error('api/user error:', err);

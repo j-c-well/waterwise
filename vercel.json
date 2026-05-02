@@ -35,6 +35,7 @@
     { "source": "/api/user/email-preview",            "destination": "/api/user.js" },
     { "source": "/api/analytics/email-click",         "destination": "/api/user.js" },
     { "source": "/api/cron/scrape",                   "destination": "/api/user.js" },
-    { "source": "/api/cron/email",                    "destination": "/api/user.js" }
+    { "source": "/api/cron/email",                    "destination": "/api/user.js" },
+    { "source": "/api/webhooks/resend",               "destination": "/api/user.js" }
   ]
 }
